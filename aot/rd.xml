@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rd.xml - hand-written runtime directives for ILC.
+
+  This file is deliberately almost empty. Two things had to be learned the
+  hard way to get here, and both are worth stating so they are not
+  reintroduced:
+
+  1. ILC's rd.xml support is a SUBSET of the old .NET Native runtime
+     directives. It accepts <Assembly> and <Type> (with <Method>, <Field>,
+     <Property>, <Event> beneath them). It does NOT accept <Namespace>, and
+     reports "Namespace is not a supported Runtime Directive" as a hard
+     failure. Six MegaCrit.Sts2.Core.* namespace roots used to live here.
+
+  2. An <Assembly Name="X"> naming an assembly that is not in the compilation
+     is also a HARD ERROR - "Failed to load assembly 'X'" - not something ILC
+     skips. GodotSharpEditor (editor-only), System.Text.Json, FmodSharp,
+     fmod_godot, spine-godot and SpineGodotSharp were all named here and each
+     failed the build in turn.
+
+  So the assembly roots are GENERATED into rd.generated.xml by
+  scripts/docker-entry.sh, from the assemblies actually being fed to ILC. That
+  list cannot drift from reality, and rooting all of them is the intent anyway
+  (see aot/README.md: start broad, narrow once the game boots).
+
+  What the namespace roots were FOR still matters. ModelDb.Init builds the
+  whole content database by reflecting over AllAbstractModelSubtypes, so every
+  model type must survive trimming with its metadata and a callable
+  constructor. That is now covered by the generated
+  <Assembly Name="sts2" Dynamic="Required All" />, which roots the assembly
+  those namespaces live in.
+
+  If the build ever needs to be narrowed from "root all of sts2" to something
+  smaller, this is where the <Type> entries go - one per type, since
+  <Namespace> is not available. Check the ModelDb phase-1/phase-2 counts in
+  sts2_debug.log against a desktop run before and after any such change; a
+  trimmed model type does not throw, it just quietly disappears from the
+  content database.
+-->
+<Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">
+  <Application>
+  </Application>
+</Directives>

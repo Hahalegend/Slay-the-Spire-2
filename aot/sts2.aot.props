@@ -1,0 +1,147 @@
+<!--
+  sts2.aot.props – ILC settings for the NativeAOT payload.
+
+  The Dr. Mario port added these to the game's own .csproj because we had one.
+  Here there is no project: the input is a directory of compiled assemblies.
+  aot/sts2.aot.csproj is a shim project that references them as raw assemblies
+  and imports this file; see aot/README.md.
+
+  MIT license; see LICENSE. -->
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+
+    <!-- linux-bionic-arm64 is the RID that matters. NOT linux-arm64: bionic
+         gives you a libc surface the so_util loader and libc_shim can
+         actually satisfy, and it is what makes the resulting .so loadable
+         next to libgodot_android.so. Celeste64's shim symbol list came from a
+         linux-arm64/glibc build and does NOT transfer – that is documented
+         in nativeaot_shim.c and it applies here too. -->
+    <RuntimeIdentifier>linux-bionic-arm64</RuntimeIdentifier>
+
+    <PublishAot>true</PublishAot>
+    <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
+    <DisableUnsupportedError>true</DisableUnsupportedError>
+    <SelfContained>true</SelfContained>
+
+    <CppCompilerAndLinker>clang</CppCompilerAndLinker>
+
+    <!-- No ICU on the console. The engine is told en_US via GodotIO.getLocale
+         (config.h DEVICE_LOCALE); this keeps the managed side consistent with
+         that rather than trying to load an ICU data blob that is not there. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- PredefinedCulturesOnly=false is REQUIRED alongside it.
+         Hardware run 11 named this exactly:
+
+           System.Globalization.CultureNotFoundException: Only the invariant
+           culture is supported in globalization-invariant mode.
+           en-US is an invalid culture identifier.
+             at CultureInfo..ctor(String name, Boolean useUserOverride)
+             at NullPlatformUtilStrategy.GetThreeLetterLanguageCode()
+             at LocManager..ctor()
+
+         Invariant mode defaults this to TRUE, which makes `new CultureInfo("en-US")`
+         THROW. False lets it succeed and behave invariantly — a CultureInfo
+         that exists and does nothing locale-specific, which is what a console
+         with no ICU can honestly offer.
+
+         Throwing here is fatal in a way it looks like it should not be: it
+         happens inside LocManager's constructor during NGame startup, so the
+         game has no localisation manager and unwinds. -->
+    <PredefinedCulturesOnly>false</PredefinedCulturesOnly>
+
+    <!-- System.Text.Json reflection.
+         Run 11:
+
+           InvalidOperationException: Reflection-based serialization has been
+           disabled for this application.
+             at JsonSerializer.Deserialize[TValue](String, JsonSerializerOptions)
+             at AtlasManager.LoadAtlasInternal(String atlasName)
+             at AtlasManager.LoadEssentialAtlases()
+
+         NativeAOT defaults this to false because reflection-based serialisation
+         cannot be statically analysed. StS2 deserialises its texture atlases
+         that way, so with it off the game cannot load a single atlas.
+
+         Turning it on costs binary size and reintroduces trim warnings we
+         cannot act on — but the alternative is source-generated contexts,
+         which means editing game code we do not have. rd.generated.xml roots
+         the whole sts2 assembly, so the metadata reflection needs is present. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+
+    <!-- Keep metadata. Godot's reflective class/signal/export binding needs
+         it, and unlike the Dr. Mario port we cannot annotate the source to
+         tell the trimmer what survives. Costs size; buys a game that boots. -->
+    <IlcTrimMetadata>false</IlcTrimMetadata>
+    <IlcDisableReflection>false</IlcDisableReflection>
+
+    <!-- Full stacks and symbol names in the AOT payload. The wrapper's
+         sts2_abort_hook prints an offset into the .so meant to be fed
+         straight to addr2line, which is worth nothing if the symbols were
+         stripped. Turn these off only after the game is playable. -->
+    <IlcGenerateStackTraceData>true</IlcGenerateStackTraceData>
+
+    <!-- Strip symbols into a SEPARATE .dbg file rather than embedding them.
+         
+         Embedded, the first real build was 295 MB of which 193 MB was debug
+         and symbol data. That matters more than disk space: so_load() does
+         malloc(file_size) and reads the WHOLE file before parsing it, so every
+         embedded megabyte is a transient megabyte of Switch heap on top of the
+         124 MB the payload actually maps.
+
+         Stripped, the file is ~102 MB and the transient allocation drops with
+         it. The symbols land in libsts2.so.dbg next to it, so addr2line still
+         works on a crash offset - keep that file, just do not put it on the
+         SD card.
+
+         IlcGenerateStackTraceData stays TRUE: that is the managed-side data
+         behind readable exception stack traces, and it is small. -->
+    <StripSymbols>true</StripSymbols>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>portable</DebugType>
+
+    <!-- Optimize for size: the wrapper reserves a fixed contiguous region for
+         the payload (SO_HEAP_RESERVE in main.c) and a smaller image leaves
+         more room for the engine and the GDExtensions. Switch to Speed only
+         if profiling says the managed side is the bottleneck. -->
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+
+    <!-- Warnings, not errors. Trim warnings against a closed-source assembly
+         set are numerous and mostly unactionable – you cannot annotate code
+         you do not have. Read them once to find the reflection sites worth
+         adding to rd.xml, then move on. -->
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
+    <NoWarn>$(NoWarn);IL2026;IL2057;IL2062;IL2067;IL2070;IL2072;IL2075;IL2087;IL3050</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RdXmlFile Include="$(MSBuildThisFileDirectory)rd.xml" />
+    <!-- Generated by scripts/docker-entry.sh from the assemblies actually
+         being compiled. See the comment at the top of rd.xml for why the
+         assembly roots are not hand-written. -->
+    <RdXmlFile Include="$(MSBuildThisFileDirectory)rd.generated.xml"
+               Condition="Exists('$(MSBuildThisFileDirectory)rd.generated.xml')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Only the reflection-dependent assemblies, matching the generated
+         rd.generated.xml. Deriving this from the whole reference set was
+         wrong: rooting an assembly makes ILC compile EVERY type in it, and
+         Steamworks.NET contains an explicit-layout union
+         (SteamNetworkingConfigValue_t.OptionValue) that ILC cannot lay out:
+         "Failed to load type 'OptionValue' ... because of field offset '0'".
+         Nothing referenced it; the root dragged it in.
+
+         These three are safe to name literally because the filter in
+         scripts/docker-entry.sh already hard-fails if sts2.dll, GodotSharp.dll
+         or STS2Switch.dll is missing. -->
+    <TrimmerRootAssembly Include="sts2" />
+    <TrimmerRootAssembly Include="GodotSharp" />
+    <TrimmerRootAssembly Include="STS2Switch" />
+  </ItemGroup>
+
+</Project>

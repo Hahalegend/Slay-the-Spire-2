@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Shim project: contributes no source of its own, exists so ILC has
+       something to run under. See aot/README.md. -->
+
+  <Import Project="sts2.aot.props" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+
+    <!-- Produce a SHARED LIBRARY, not an executable.
+         Without this, PublishAot emits a native executable with a main()
+         entry point, and the engine's dlopen of libsts2.so would find no
+         godotsharp_game_main_init to call. NativeLib=Shared is also what makes
+         ILC export every [UnmanagedCallersOnly(EntryPoint=...)] method it
+         compiles, which is how that symbol reaches the engine at all. -->
+    <NativeLib>Shared</NativeLib>
+
+    <!-- NOT "sts2". The game's own assembly is sts2.dll, and naming the shim
+         the same thing made the shim shadow it: the build wrote
+         aot/bin/.../sts2.dll and ILC treated the EMPTY shim as the entry
+         assembly. -->
+    <AssemblyName>sts2_aot_root</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!-- Filtered by scripts/docker-entry.sh: game and third-party assemblies
+         only, with everything the runtime supplies removed. Referencing the
+         desktop runtime's System.Private.CoreLib alongside the SDK's net9.0
+         framework gives "type exists in both ... CoreLib and System.Runtime",
+         and then the compiler loses System.String entirely. -->
+    <AotReferenceDir Condition="'$(AotReferenceDir)' == ''">$(MSBuildThisFileDirectory)assemblies-refs</AotReferenceDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=true so they land in the publish closure; ILC compiles the
+         whole closure into one native .so. -->
+    <Reference Include="$(AotReferenceDir)/*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- THE export that makes the payload usable.
+         
+         Godot's SDK compiles GodotPlugins.Game.Main INTO the game assembly,
+         carrying [UnmanagedCallersOnly(EntryPoint = "godotsharp_game_main_init")].
+         Confirmed present in sts2.dll via `sts2nx-aot bootstrap-info`.
+
+         But ILC only scans its ENTRY assembly for unmanaged entry points, and
+         the entry assembly here is this shim, which has no code. Without this
+         item the build succeeds and produces a .so whose only dynamic exports
+         are ILC's own section markers (__start___managedcode and friends) -
+         a payload the engine loads and then finds nothing to call in, with
+         nothing in any log to explain it.
+
+         Named explicitly rather than derived: GodotPlugins.Game.Main also
+         appears in Steamworks.NET.dll in this build, and two assemblies
+         claiming the same export name is not something to leave to chance. -->
+    <UnmanagedEntryPointsAssembly Include="sts2" />
+  </ItemGroup>
+
+  <Target Name="VerifyAotInput" BeforeTargets="Build">
+    <Error Condition="!Exists('$(AotReferenceDir)')"
+           Text="No filtered assemblies at $(AotReferenceDir). scripts/docker-entry.sh builds this from the weave output; see aot/README.md." />
+    <ItemGroup>
+      <_AotRefs Include="$(AotReferenceDir)/*.dll" />
+    </ItemGroup>
+    <Error Condition="'@(_AotRefs)' == ''"
+           Text="$(AotReferenceDir) is empty." />
+    <Message Importance="high" Text="AOT input: @(_AotRefs->Count()) assemblies from $(AotReferenceDir)" />
+  </Target>
+
+</Project>
