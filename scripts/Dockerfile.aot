@@ -1,0 +1,58 @@
+# Dockerfile.aot -- everything the weave+AOT steps need, so nobody has to
+# assemble a toolchain by hand.
+#
+# This does NOT build the .nro. That needs devkitPro and is built once by
+# whoever ships the port; it does not change when the game updates.
+#
+# What DOES change every game update is libsts2.so, because it is compiled from
+# your own Steam copy of the assemblies. That is the step this container exists
+# for, and it is the only one an end user has to repeat.
+#
+#   docker build -f scripts/Dockerfile.aot -t sts2nx-aot .
+#   docker run --rm \
+#     -v /path/to/steam/assemblies:/in:ro \
+#     -v "$PWD/dist":/out \
+#     sts2nx-aot
+#
+# Result: /out/libsts2.so, to be copied next to sts2.nro on the SD card.
+
+FROM mcr.microsoft.com/dotnet/sdk:9.0
+
+ARG NDK_VERSION=r27c
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        unzip curl ca-certificates python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ILC needs the NDK's clang for the final native link against bionic. The
+# desktop clang in this image will NOT do: the RID is linux-bionic-arm64 and
+# the sysroot has to match, which is the same reason nativeaot_shim.c warns
+# that a glibc-shaped build's symbol list does not transfer.
+RUN curl -fsSL -o /tmp/ndk.zip \
+      "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
+ && unzip -q /tmp/ndk.zip -d /opt \
+ && rm /tmp/ndk.zip \
+ && mv /opt/android-ndk-* /opt/android-ndk
+
+ENV ANDROID_NDK=/opt/android-ndk
+ENV PATH="/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+
+WORKDIR /src
+COPY . /src
+
+# The repo is edited on Windows, so the shell scripts arrive with CRLF line
+# endings and possibly no exec bit. bash reports the first as
+# "bad interpreter: /usr/bin/env bash^M", which reads like a missing bash
+# rather than a whitespace problem. Normalise both rather than rely on how the
+# host checked the files out.
+RUN sed -i 's/\r$//' /src/scripts/*.sh \
+ && chmod +x /src/scripts/*.sh
+
+# Warm the NuGet cache at build time so a later run works offline and does not
+# re-download ILCompiler on every invocation.
+RUN dotnet restore tools/StS2Patcher/StS2Patcher.csproj \
+ && dotnet restore patches/STS2Switch.Attributes/STS2Switch.Attributes.csproj \
+ || true
+
+ENTRYPOINT ["/src/scripts/docker-entry.sh"]
