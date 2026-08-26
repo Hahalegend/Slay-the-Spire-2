@@ -31,9 +31,9 @@ sdmc:/switch/sls2_nx
 ├── assets/                                             <- from your APK
 └── save/                                               <- created on first boot
 ```
-## Building AOT payload
+# Building AOT payload
 
-# Building `libsts2.so`
+# Building `libsts2.so Only` V0.107.1 tested
  
 **You have to do this yourself. It cannot be downloaded.**
  
@@ -41,10 +41,7 @@ sdmc:/switch/sls2_nx
 Crit's code, so nobody can distribute it for you — but you already own it, and
 this turns your copy into the file the port needs.
  
-It takes about 20–40 minutes, most of which is waiting. You do not need to know
-how to program. You will type four commands.
- 
----
+ ---
  
 ## What you need first
  
