@@ -16,6 +16,9 @@ loaded in place of the JIT the engine would otherwise expect.
 You need the `.pck` from a Steam install, plus four libraries from the Android
 APK. Copy the `.nro` to your SD card and place the game files next to it:
 
+https://github.com/Ekyso/StS2-Launcher
+You need latest .apk (v0.3.14) from Cinderbox Discord
+
 ```
 sdmc:/switch/sls2_nx
 ├── sts2.nro
@@ -42,6 +45,7 @@ file and skip it. This will take 20-30 minutes.
 Forked from `drmariomania_nx`, inheriting the `so_util`/JNI-shim lineage
 (Andy Nguyen, fgsfds, NaGaa95, elliencode) — all MIT-licensed.
 Thanks @delsonazevedo for AOT work,
+Ekyso for initial Android port
 
 The first-boot progress console and the heap poison/quarantine allocator came
 from ChanseyIsTheBest's Switch port of Fruit Ninja. Its GC bridge is
