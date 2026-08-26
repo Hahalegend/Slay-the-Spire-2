@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net9.0, not netstandard2.1.
+         The original comment here claimed netstandard was needed "so both the
+         net9 tool and the patch assembly can reference it" – but StS2Patcher
+         reads the attributes through Cecil BY NAME and does not reference this
+         project at all. The only consumer is STS2Switch.dll, which is net9.0.
+         netstandard2.1 bought nothing and cost a C# 8 language default, which
+         rejected the file-scoped namespaces in PatchAttributes.cs. -->
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>STS2Switch</RootNamespace>
+    <AssemblyName>STS2Switch.Attributes</AssemblyName>
+  </PropertyGroup>
+
+</Project>

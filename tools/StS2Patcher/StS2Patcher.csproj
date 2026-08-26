@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>StS2Patcher</RootNamespace>
+    <AssemblyName>StS2Patcher</AssemblyName>
+    <!-- Build-time tool only; never shipped to the console. -->
+    <IsPublishable>true</IsPublishable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Mono.Cecil 0.11.5 reads and writes the assembly formats Roslyn emits
+         for net8/net9. Do not move to 0.12 pre-releases: the Rocks
+         SimplifyMacros/OptimizeMacros pair changed behaviour around short
+         branch forms, which is exactly what the weaver depends on. -->
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+  </ItemGroup>
+
+</Project>

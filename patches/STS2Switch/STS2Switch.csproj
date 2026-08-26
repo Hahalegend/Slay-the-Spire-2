@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PropertyGroup FIRST. MSBuild evaluates top to bottom, so a default
+       declared after the ItemGroup that consumes it evaluates as empty. The
+       container passes -p:GameAssemblyDir explicitly, which masked this –
+       a plain `dotnet build` would have silently dropped the reference. -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>STS2Switch</RootNamespace>
+    <AssemblyName>STS2Switch</AssemblyName>
+    <GameAssemblyDir Condition="'$(GameAssemblyDir)' == ''">$(MSBuildThisFileDirectory)../../aot/assemblies-raw</GameAssemblyDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../STS2Switch.Attributes/STS2Switch.Attributes.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GodotSharp, for the Godot.GD fallback in SwitchLog.cs.
+         The game assemblies are deliberately NOT referenced: every patch
+         targets its type BY NAME, so this builds without a copy of the game
+         present and the circular assembly reference the earlier typeof()-based
+         design created is gone.
+
+         Private=false: compile-time only. The weaver puts the patched copies
+         in the AOT input set; copying them here too would put two versions in
+         the closure. -->
+    <Reference Include="$(GameAssemblyDir)/GodotSharp.dll" Condition="Exists('$(GameAssemblyDir)/GodotSharp.dll')">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Tells SwitchLog.cs whether the Godot fallback is usable. Without this a
+       missing GodotSharp turns a conditional reference into a hard compile
+       error, which is a confusing way to learn the path was wrong. -->
+  <PropertyGroup Condition="Exists('$(GameAssemblyDir)/GodotSharp.dll')">
+    <DefineConstants>$(DefineConstants);HAVE_GODOTSHARP</DefineConstants>
+  </PropertyGroup>
+
+</Project>
