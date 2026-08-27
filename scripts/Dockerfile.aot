@@ -16,7 +16,37 @@
 #
 # Result: /out/libsts2.so, to be copied next to sts2.nro on the SD card.
 
-FROM mcr.microsoft.com/dotnet/sdk:9.0
+# PIN THIS BY DIGEST.
+#
+# `sdk:9.0` is a FLOATING tag -- Microsoft republishes it on every .NET 9 patch
+# release. Whoever builds later gets a different SDK, and therefore a different
+# ILCompiler, and therefore a different binary.
+#
+# That is not theoretical. Two builds from identical inputs were compared:
+#
+#     sts2.dll          byte-identical   (md5 694db3dc...)
+#     GodotSharp.dll    byte-identical   (md5 16dbe046...)
+#     patch set         identical
+#     libsts2.so        106,606,952 vs 108,716,432 bytes
+#
+# The larger one had ~195 extra DXGI/Proton/desktop strings the other had
+# trimmed away -- a different ILCompiler making different trimming decisions.
+# It loaded, exported the right symbols, passed every structural check, and did
+# not work.
+#
+# PINNED TO 9.0.317 -- the SDK that produced the known-good payload
+# (libsts2.so, md5 997ea555..., 106,606,952 bytes). Confirmed with:
+#
+#     docker run --rm --entrypoint dotnet sts2nx-aot --version
+#
+# Do not "update" this without rebuilding and re-verifying the hash. A newer
+# SDK is not a safer SDK here: the only thing that makes this build verifiable
+# is that everyone runs the same compiler.
+#
+# `docker images --digests` comes back EMPTY on Docker Desktop, by the way --
+# BuildKit keeps base layers in its own cache rather than the tagged-image
+# list. Ask the built image instead, as above.
+FROM mcr.microsoft.com/dotnet/sdk:9.0.317
 
 ARG NDK_VERSION=r27c
 ARG DEBIAN_FRONTEND=noninteractive
