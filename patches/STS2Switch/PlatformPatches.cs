@@ -71,11 +71,42 @@ public static class PlatformPatches
     // So the cctor itself is replaced. Its statics are then left at their
     // default values, which is fine precisely because every method that would
     // read them is also suppressed below.
+    // v0.111.1+ added Sentry.Godot.Internal.SentryGodotInitializer.AutoInit()
+    // and SentryAutoInit.Init() as [ModuleInitializer]s. AutoInit() calls
+    // Console.WriteLine() during NativeAOT StartupCodeHelpers.RunModuleInitializers(),
+    // which throws in ConsolePal.EnsureInitializedCore() on Switch -> FailFast/abort.
+    [SwitchReplace("Sentry.Godot.Internal.SentryGodotInitializer", "AutoInit", Optional = true)]
+    public static void NoSentryGodotAutoInit() { }
+
+    [SwitchReplace("SentryAutoInit", "Init", Optional = true)]
+    public static void NoSentryAutoInit() { }
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.SentryBootstrap", "_EnterTree", Optional = true)]
+    public static bool SkipSentryBootstrap() => false;
+
     [SwitchReplace("MegaCrit.Sts2.Core.Debug.SentryService", ".cctor", Optional = true)]
     public static void NoSentryCctor() { }
 
     [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "Initialize", Optional = true)]
     public static bool SkipSentryInit() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "AfterGameInit", Optional = true)]
+    public static bool SkipSentryAfterGameInit() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "SetPlatformBranch", Optional = true)]
+    public static bool SkipSentrySetPlatformBranch() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "SetTag", Optional = true)]
+    public static bool SkipSentrySetTag() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "SetExtra", Optional = true)]
+    public static bool SkipSentrySetExtra() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "OnLogCallback", Optional = true)]
+    public static bool SkipSentryOnLogCallback() => false;
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "DisableSentryIfModded", Optional = true)]
+    public static bool SkipSentryDisableIfModded() => false;
 
     [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "Shutdown", Optional = true)]
     public static bool SkipSentryShutdown() => false;

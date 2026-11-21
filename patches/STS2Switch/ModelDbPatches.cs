@@ -70,6 +70,8 @@ namespace STS2Switch.Patches;
 public static class ModelDbPatches
 {
     private static bool _suppressContains;
+    private static MethodInfo? _cachedGetId;
+    private static FieldInfo? _cachedIdField;
 
     private const BindingFlags All =
         BindingFlags.Public | BindingFlags.NonPublic |
@@ -86,6 +88,26 @@ public static class ModelDbPatches
         if (_suppressContains)
         {
             __result = false;
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// v0.111.1 changed AbstractModel..ctor() from checking ModelDb.Contains(Type)
+    /// to calling ModelDb.GetByIdOrNull&lt;AbstractModel&gt;(id) before assigning
+    /// &lt;Id&gt;k__BackingField. During phase 2, skip the duplicate check while
+    /// still setting &lt;Id&gt;k__BackingField and keeping GetByIdOrNull working
+    /// for cross-model lookups inside model constructors.
+    /// </summary>
+    [SwitchPrefix("MegaCrit.Sts2.Core.Models.AbstractModel", ".ctor")]
+    public static bool AbstractModelCtorPrefix(object __instance)
+    {
+        if (!_suppressContains) return true;
+        if (_cachedGetId is not null && _cachedIdField is not null)
+        {
+            var id = _cachedGetId.Invoke(null, new object[] { __instance.GetType() });
+            _cachedIdField.SetValue(__instance, id);
             return false;
         }
         return true;
@@ -392,6 +414,10 @@ public static class ModelDbPatches
 
         // -- phase 2 ----------------------------------------------------------
         // The flag stands in for the Android version's temporary Harmony patch.
+        _cachedGetId = getIdMethod;
+        var abstractModelType = Type.GetType("MegaCrit.Sts2.Core.Models.AbstractModel, sts2", false)
+                                ?? FindType("MegaCrit.Sts2.Core.Models.AbstractModel");
+        _cachedIdField = abstractModelType?.GetField("<Id>k__BackingField", All);
         _suppressContains = true;
 
         int constructed = 0;
@@ -511,7 +537,8 @@ public static class ModelDbPatches
     // on its first boot. Everything beyond this is learned at runtime.
     private static readonly string[] Seed =
     {
-        "MONSTER.ZAPBOT", "CARD.DISINTEGRATION", "POTION.FLEX_POTION",
+        "MONSTER.ZAPBOT", "MONSTER.STABBOT", "MONSTER.GUARDBOT", "MONSTER.NOISEBOT",
+        "CARD.DISINTEGRATION", "POTION.FLEX_POTION",
         "MONSTER.LEAF_SLIME_S", "MONSTER.LEAF_SLIME_M", "MONSTER.BOWLBUG_EGG",
         "MONSTER.CALCIFIED_CULTIST", "MONSTER.AXE_RUBY_RAIDER",
         "RELIC.ASTROLABE", "RELIC.DAUGHTER_OF_THE_WIND", "RELIC.FAKE_ANCHOR",

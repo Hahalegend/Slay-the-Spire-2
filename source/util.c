@@ -147,8 +147,12 @@ void tls_setup_guard(void) {
   armSetTlsRw(s_tls_block);
 }
 
-// boost the CPU to 1785MHz while loading
+// ApmCpuBoostMode_FastLoad raises CPU to 1785 MHz but hard-throttles the
+// Tegra X1 GPU down to 76.8 MHz, which starves Godot's Vulkan renderer during
+// both boot and gameplay. Only activate when explicitly enabled (`boost 1`).
 void cpu_boost(int on) {
+  if (on && !config.boost)
+    return;
   appletSetCpuBoostMode(on ? ApmCpuBoostMode_FastLoad : ApmCpuBoostMode_Normal);
 }
 

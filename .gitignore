@@ -1,0 +1,28 @@
+# Build outputs & intermediate artifacts
+bin/
+obj/
+build/
+dist/
+work/
+toolchains/
+aot/bin/
+aot/obj/
+aot/assemblies-raw/
+aot/assemblies/
+aot/rd.generated.xml
+
+# Never commit copyrighted game assets, binaries, keys, or logs
+*.pck
+*.nro
+*.nro.orig
+*.nsp
+*.apk
+*.so
+*.so.dbg
+*.dll
+*.keys
+*.log
+*.save
+boot_stats*.txt
+.DS_Store
+Thumbs.db

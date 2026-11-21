@@ -1,0 +1,30 @@
+# Performance: disable heavy debug/hunting hooks (poison_free=1 memsets every free!)
+poison_free 0
+lock_trace 0
+lock_trace_dump 0
+vk_verbose 0
+dispatch_log 0
+
+# Safety with negligible overhead: prevents corrupt free() from crashing newlib allocator
+free_guard 1
+
+# CPU boost mode: disabled so ApmCpuBoostMode_FastLoad never throttles the Switch GPU
+# down to 76.8 MHz (use sys-clk if you want to overclock both CPU & GPU together)
+boost 0
+
+# Resolution: 960x540 (16:9 scaled to screen) for smooth, consistent FPS
+resolution_height 540
+
+# Stability:
+# - skip_compute 1: drops ParticlesShaderRD compute dispatches that hang NVK on GM20B
+# - nvk_cmd_mem_uncached 1 / nvk_mem_stream_uncached 1: prevents NVK stale-memory GPU hangs
+# - gc_region_range_mb 384: must stay >= DOTNET_GCHeapHardLimit (352 MB)
+gpu_particles 0
+skip_compute 1
+nvk_cmd_mem_uncached 1
+nvk_mem_stream_uncached 1
+gc_region_range_mb 384
+
+# Renderer: Vulkan mobile
+enable_vulkan 1
+rendering_method mobile

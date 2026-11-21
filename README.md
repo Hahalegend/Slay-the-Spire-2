@@ -1,5 +1,11 @@
 # Slay the Spire 2 — Nintendo Switch port (Godot + NativeAOT wrapper)
 
+> **Fork highlights (Steam `v0.111.1` + Switch Performance & Loading Optimizations):**
+> - Updated patches for Steam **`v0.111.1`** (`SentryGodotInitializer`, `ModelDbPatches` `AbstractModel..ctor` + Fabricator minions, `LifecyclePatches` fallback).
+> - Major loading & FPS improvements (`PreloadPatches.cs` selective preloading + parallel core combat VFX, GPU 76.8 MHz `cpu_boost` fix in `source/util.c` + `scripts/patch-nro-gpu-clock.py`, tuned `configs/config.txt` & `configs/override.cfg`).
+> - Native Windows NativeAOT build script without Docker/WSL (`scripts/build-windows-native.ps1`).
+> - See **[docs/OPTIMIZATIONS_V0111.md](docs/OPTIMIZATIONS_V0111.md)** for full details and build instructions.
+
 This is a native wrapper / loader that runs the original ARM64 Android build of
 Slay the Spire 2 on Switch homebrew. It contains no game code and no game
 assets. It loads the game's own engine library (`libgodot_android.so`) and
