@@ -27,6 +27,11 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
   - Allowlists essential run/combat/room/character/shader/material assets + the ~21 universal combat VFX scenes (`vfx_attack_slash`, `vfx_damage_num`, `vfx_block`, `vfx_block_broken`, `vfx_card_fly`, `vfx_card_shuffle_fly`, etc.) and loads them **in parallel** (`AssetLoadingSession.IsVfxScene` → `false`) instead of serially one-by-one.
   - Preserves on-demand `CommonAssets` / `RunSet` assets across room transitions (`AssetCache.UnloadMissedCacheAssets`) while letting `LoadAssetSets` continue unloading old-room monsters and FTUEs cleanly.
   - Skips `OneTimeInitialization.PrewarmJit()` (no JIT under NativeAOT), skips the boot intro logo (`LaunchMainMenu`), and caps `NTransition` `FadeOut`/`FadeIn` to `0.25s`.
+- **Consistent frame pacing & low-latency GC (`patches/STS2Switch/PerformancePatches.cs`, `ParticlePatches.cs`, `aot/sts2.aot.props`):**
+  - Enforces `VSync: Enabled`, locked `30 FPS` pacing (`33.3 ms` frame budget, preventing `NGame.InitializeGraphicsPreferences()` from overriding `override.cfg` back to `VSync: Off` / `60 FPS`), `30 Hz` physics ticks, and root viewport AA/debanding off. (Users running `sys-clk` can still raise FPS Limit live in Settings.)
+  - Sets `GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency` to suppress blocking Gen 2 GC pauses during combat.
+  - Hides and stops `_process` on suppressed `GpuParticles2D` nodes (`ParticlePatches.cs`) and smooths main-thread finalizer draining to 16 objects/frame (`FinalizerSafetyPatches.cs`).
+  - Enables `.NET 9` `<OptimizationPreference>Speed</OptimizationPreference>` (`-Ot`) for faster AOT codegen while keeping `LOAD span` (`143.0 MB`) safely under the `160 MB` `DOTNET_SO_SLICE`.
 - **Tuned Switch configs (`configs/config.txt` & `configs/override.cfg`):**
   - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`).
   - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 0`, `gc_region_range_mb 384`).

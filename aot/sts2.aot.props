@@ -102,11 +102,10 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>portable</DebugType>
 
-    <!-- Optimize for size: the wrapper reserves a fixed contiguous region for
-         the payload (SO_HEAP_RESERVE in main.c) and a smaller image leaves
-         more room for the engine and the GDExtensions. Switch to Speed only
-         if profiling says the managed side is the bottleneck. -->
-    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <!-- Optimize NativeAOT codegen for Speed (-Ot in .NET 9) for faster C#
+         combat simulation, GodotSharp interop, and Spine updates on Tegra X1
+         Cortex-A57, while staying safely below the 160 MB DOTNET_SO_SLICE. -->
+    <OptimizationPreference>Speed</OptimizationPreference>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
 
     <!-- Warnings, not errors. Trim warnings against a closed-source assembly

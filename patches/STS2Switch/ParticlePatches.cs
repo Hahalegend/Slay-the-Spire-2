@@ -79,49 +79,44 @@ public static class ParticlePatches
     // patched world should still be able to turn things OFF.
     [SwitchPrefix("Godot.GpuParticles2D", "Emitting",
                   Kind = MemberKind.PropertySetter, Optional = true)]
-    // __arg0, not `bool value`: the weaver binds parameters BY POSITION only.
-    // Name binding needs the target's parameter names, which do not exist for
-    // methods we never had source to -- MethodWeaver.cs rejects anything that
-    // is not __instance/__result/__argN, and it rejects it at weave time.
-    public static bool SuppressGpuEmission(bool __arg0)
+    public static bool SuppressGpuEmission(object __instance, bool __arg0)
     {
         AnnounceOnce();
         if (s_allowGpuParticles) return true;   // run the real setter
+        if (__arg0 && __instance is Godot.GpuParticles2D p)
+        {
+            p.Visible = false;
+            p.SetProcess(false);
+            p.SetPhysicsProcess(false);
+        }
         return !__arg0;                         // false: only when turning ON
     }
 
-    // Restart() re-seeds and starts a one-shot emitter -- the other way combat
-    // VFX begin. Suppressed entirely under the mitigation.
-    //
-    // TWO declarations, because GodotSharp has TWO overloads and the weaver
-    // refuses to pick one for us:
-    //
-    //   Godot.GpuParticles2D.Restart is ambiguous (2 overloads).
-    //     (System.Boolean)
-    //     ()
-    //
-    // That refusal is right. Silently taking byName[0] would patch whichever
-    // overload Cecil happened to list first, and "the mitigation is on" would
-    // depend on which one the game calls -- unknowable from a log.
-    //
-    // Godot 4.5 added Restart(bool keepSeed); the parameterless form forwards
-    // to it. Patching only one would leave the other as a live path to the
-    // dispatch this exists to prevent, so both are declared. Prefixing both
-    // means a forwarding call is stopped at the outer frame and never reaches
-    // the inner one -- suppression twice over, not a double dispatch.
     [SwitchPrefix("Godot.GpuParticles2D", "Restart",
                   ArgumentTypeNames = new string[0], Optional = true)]
-    public static bool SuppressGpuRestart()
+    public static bool SuppressGpuRestart(object __instance)
     {
         AnnounceOnce();
+        if (!s_allowGpuParticles && __instance is Godot.GpuParticles2D p)
+        {
+            p.Visible = false;
+            p.SetProcess(false);
+            p.SetPhysicsProcess(false);
+        }
         return s_allowGpuParticles;
     }
 
     [SwitchPrefix("Godot.GpuParticles2D", "Restart",
                   ArgumentTypeNames = new[] { "System.Boolean" }, Optional = true)]
-    public static bool SuppressGpuRestartKeepSeed(bool __arg0)
+    public static bool SuppressGpuRestartKeepSeed(object __instance, bool __arg0)
     {
         AnnounceOnce();
+        if (!s_allowGpuParticles && __instance is Godot.GpuParticles2D p)
+        {
+            p.Visible = false;
+            p.SetProcess(false);
+            p.SetPhysicsProcess(false);
+        }
         return s_allowGpuParticles;
     }
 #endif
