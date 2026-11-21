@@ -204,6 +204,9 @@ $DbgFile = Get-ChildItem (Join-Path $Repo "aot\bin\Release") -Recurse -Filter "*
 if ($DbgFile) {
   Copy-Item $DbgFile.FullName (Join-Path $DistDir "libsts2.so.dbg") -Force
   Ok "Saved debug symbols to $DistDir\libsts2.so.dbg (not copied to SD card)"
+  Say "Patching PortableThreadPool worker keep-alive in libsts2.so"
+  python (Join-Path $Repo "tools\patch_aot_threadpool.py") (Join-Path $DistDir "libsts2.so.dbg") (Join-Path $DistDir "libsts2.so") (Join-Path $OutDir "libsts2.so")
+  if ($LASTEXITCODE -ne 0) { throw "patch_aot_threadpool.py failed with exit code $LASTEXITCODE" }
 }
 
 # 8. Verify libsts2.so

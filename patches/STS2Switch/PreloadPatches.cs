@@ -8,7 +8,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Reflection;
+using System.Threading;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
@@ -18,7 +20,10 @@ public static class PreloadPatches
 {
     private static FieldInfo? _loadingField;
     private static FieldInfo? _toLoadField;
+    private static FieldInfo? _finalizingField;
     private static FieldInfo? _cacheField;
+    private static Action<object>? _finalizeLoadingDelegate;
+    private static MethodInfo? _finalizeLoadingMethod;
     private static bool _sessionFieldsResolved;
     private static readonly HashSet<string> RoomAdditionalAssets = new(StringComparer.OrdinalIgnoreCase);
 
@@ -362,6 +367,19 @@ public static class PreloadPatches
 
     private static bool IsCoreCombatVfx(string path)
     {
+        // Skip internal sub-component scenes that Godot automatically loads as
+        // dependencies of their parent VFX .tscn, avoiding 30+ redundant queue rounds.
+        if (path.Contains("/components/", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("_flipbook.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("_2d_front.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("_3d_back.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("_viewport_bg.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Contains("/scream/vfx_scream_", StringComparison.OrdinalIgnoreCase) ||
+            path.Contains("/starry_impact/vfx_starry_impact_", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         for (int i = 0; i < CoreCombatVfxNames.Length; i++)
         {
             if (path.Contains(CoreCombatVfxNames[i], StringComparison.OrdinalIgnoreCase))
@@ -390,18 +408,54 @@ public static class PreloadPatches
     }
 
 #if HAVE_GODOTSHARP
+    private static void EnsureSessionReflection(object instance)
+    {
+        if (_sessionFieldsResolved)
+            return;
+
+        var t = instance.GetType();
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        _loadingField = t.GetField("_loading", flags);
+        _toLoadField = t.GetField("_toLoad", flags);
+        _finalizingField = t.GetField("_finalizing", flags);
+        _cacheField = t.GetField("_cache", flags);
+        var fl = t.GetMethod("FinalizeLoading", flags, binder: null, Type.EmptyTypes, modifiers: null);
+        _finalizeLoadingMethod = fl;
+        if (fl is not null)
+        {
+            try
+            {
+                _finalizeLoadingDelegate = (Action<object>)Delegate.CreateDelegate(typeof(Action<object>), fl);
+            }
+            catch
+            {
+                _finalizeLoadingDelegate = null;
+            }
+        }
+        _sessionFieldsResolved = true;
+    }
+
+    private static void DrainFinalizingImmediate(object instance, Queue<string>? finalizing)
+    {
+        if (finalizing is null || finalizing.Count == 0)
+            return;
+
+        try
+        {
+            if (_finalizeLoadingDelegate is not null)
+                _finalizeLoadingDelegate(instance);
+            else
+                _finalizeLoadingMethod?.Invoke(instance, null);
+        }
+        catch
+        {
+        }
+    }
+
     [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "ProcessLoadingQueue")]
     public static bool SerializeThreadedLoading(object __instance)
     {
-        if (!_sessionFieldsResolved)
-        {
-            var t = __instance.GetType();
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-            _loadingField = t.GetField("_loading", flags);
-            _toLoadField = t.GetField("_toLoad", flags);
-            _cacheField = t.GetField("_cache", flags);
-            _sessionFieldsResolved = true;
-        }
+        EnsureSessionReflection(__instance);
 
         if (_loadingField?.GetValue(__instance) is not Queue<string> loading ||
             _toLoadField?.GetValue(__instance) is not Queue<string> toLoad ||
@@ -426,12 +480,55 @@ public static class PreloadPatches
         return false;
     }
 
-    // Immediately kick the next serialized background load on the SAME frame
-    // that CheckLoadingStatus drains _loading, eliminating 2 dead frames per asset.
+    // Immediately finalize completed assets and chain fast serialized loads
+    // within a 3.5 ms per-frame slice so 60+ small icons/materials/VFX scenes
+    // don't pay a 2-frame (33.3 ms) VSync polling floor per asset while keeping
+    // strictly 1 load in flight at any instant.
     [SwitchPostfix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "CheckLoadingStatus")]
     public static void KickNextSerializedLoad(object __instance)
     {
+        EnsureSessionReflection(__instance);
+
+        var finalizing = _finalizingField?.GetValue(__instance) as Queue<string>;
+        var loading = _loadingField?.GetValue(__instance) as Queue<string>;
+
+        // 1. Finalize any asset that CheckLoadingStatus just moved to _finalizing
+        //    while 0 worker requests are in flight.
+        DrainFinalizingImmediate(__instance, finalizing);
+
+        // 2. Kick the next serialized request onto the worker thread.
         SerializeThreadedLoading(__instance);
+
+        if (loading is null || finalizing is null || loading.Count == 0)
+            return;
+
+        // 3. Within a 3.5 ms frame budget, drain fast assets that finish on the
+        //    worker thread in sub-millisecond time without waiting for the next
+        //    60 Hz VSync frame.
+        long budgetTicks = Stopwatch.Frequency * 35 / 10_000; // 3.5 ms
+        long deadline = Stopwatch.GetTimestamp() + budgetTicks;
+
+        while (loading.Count == 1 && Stopwatch.GetTimestamp() < deadline)
+        {
+            string currentPath = loading.Peek();
+            var status = Godot.ResourceLoader.LoadThreadedGetStatus(currentPath);
+            if (status == Godot.ResourceLoader.ThreadLoadStatus.Loaded)
+            {
+                loading.Dequeue();
+                finalizing.Enqueue(currentPath);
+                DrainFinalizingImmediate(__instance, finalizing);
+                SerializeThreadedLoading(__instance);
+            }
+            else if (status == Godot.ResourceLoader.ThreadLoadStatus.InProgress)
+            {
+                Thread.Yield();
+            }
+            else
+            {
+                // Failed / InvalidResource: let stock CheckLoadingStatus fallback handle it next frame.
+                break;
+            }
+        }
     }
 #endif
 

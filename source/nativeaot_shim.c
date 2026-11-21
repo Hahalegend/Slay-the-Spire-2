@@ -363,6 +363,14 @@ void nativeaot_shim_init(void) {
   // threads inside the suspension problem.
   setenv("DOTNET_gcServer", "0", 1);
 
+  // Never let .NET 9 PortableThreadPool worker threads time out and exit after
+  // 20 seconds of inactivity: libnx does not implement pthread_detach (ENOSYS)
+  // and only frees thread stacks / kernel handles / TLS slots inside
+  // pthread_join(), so un-joined detached worker thread exits permanently leak
+  // 1 MB stack + 64 KB TLS + 1 Horizon TLS slot per cycle (crash 01795290236).
+  setenv("DOTNET_ThreadPool_ThreadPoolThreadTimeoutMs", "-1", 1);
+  setenv("DOTNET_ThreadPool_ThreadsToKeepAlive", "-1", 1);
+
   // TimeZoneInfo.
   //
   // pvzultimate hit a memcpy(NULL, src, 0x100000) reached from managed code

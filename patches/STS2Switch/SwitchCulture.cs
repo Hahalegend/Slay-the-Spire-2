@@ -69,10 +69,7 @@ public static class SwitchCulture
             // lookup is patched to accept it.
             var two = en.TwoLetterISOLanguageName;
             if (two == "iv")
-                SwitchLog.Error($"culture is {en.Name} but the two-letter code is "
-                              + "still 'iv' -- InvariantGlobalization means this "
-                              + "CANNOT report 'en', so SmartFormat plural rules "
-                              + "will still fail. See SwitchCulture.cs.");
+                SwitchLog.Info($"culture set to {en.Name} (two-letter 'iv', PluralRulePatches active)");
             else
                 SwitchLog.Info($"culture set to {en.Name} (two-letter '{two}')");
         }
@@ -81,6 +78,23 @@ public static class SwitchCulture
             // Not fatal. Without it, formatted strings stay broken but the game
             // runs -- which is what run 24 did for twenty minutes.
             SwitchLog.Error("could not set culture: " + ex.Message);
+        }
+
+        try
+        {
+            // Keep a fixed pool of 4 .NET PortableThreadPool worker threads alive
+            // for the entire session. On libnx, pthread_detach is ENOSYS and un-joined
+            // exiting threads leak 1 MB stack + 64 KB TLS + 1 Horizon TLS slot each;
+            // disabling the 20s worker idle timeout eliminates both thread-exit leaks
+            // (crash 01795290236 after 50 min) and mid-gameplay pthread_create churn.
+            AppContext.SetData("System.Threading.ThreadPool.ThreadPoolThreadTimeoutMs", -1);
+            AppContext.SetData("System.Threading.ThreadPool.ThreadsToKeepAlive", -1);
+            ThreadPool.SetMinThreads(4, 4);
+            ThreadPool.SetMaxThreads(4, 4);
+            SwitchLog.Info("ThreadPool pinned to 4 persistent worker threads (timeout=-1)");
+        }
+        catch
+        {
         }
     }
 }
