@@ -41,6 +41,8 @@ public static class PerformancePatches
             return false;
         if (c.FocusMode == Godot.Control.FocusModeEnum.None)
             return false;
+        if (c.GetFocusModeWithOverride() == Godot.Control.FocusModeEnum.None)
+            return false;
         var vp = c.GetViewport();
         if (vp is null || !Godot.GodotObject.IsInstanceValid(vp) || !vp.IsInsideTree())
             return false;
@@ -96,12 +98,16 @@ public static class PerformancePatches
             Godot.Engine.PhysicsTicksPerSecond = 30;
             Godot.Engine.MaxPhysicsStepsPerFrame = 2;
 
-            if (Godot.Engine.GetMainLoop() is Godot.SceneTree tree && tree.Root is Godot.Window root)
+            if (Godot.Engine.GetMainLoop() is Godot.SceneTree tree)
             {
-                root.Msaa2D = Godot.Viewport.Msaa.Disabled;
-                root.Msaa3D = Godot.Viewport.Msaa.Disabled;
-                root.ScreenSpaceAA = Godot.Viewport.ScreenSpaceAAEnum.Disabled;
-                root.UseDebanding = false;
+                ScreenVfxPatches.InstallTreeGuard(tree);
+                if (tree.Root is Godot.Window root)
+                {
+                    root.Msaa2D = Godot.Viewport.Msaa.Disabled;
+                    root.Msaa3D = Godot.Viewport.Msaa.Disabled;
+                    root.ScreenSpaceAA = Godot.Viewport.ScreenSpaceAAEnum.Disabled;
+                    root.UseDebanding = false;
+                }
             }
 
             SwitchLog.Info($"PerformancePatches ({reason}): MaxFps={targetFps}, PhysicsHz=30, SingleSync=NWindow, AA=Off");

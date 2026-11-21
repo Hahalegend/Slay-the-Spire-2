@@ -22,20 +22,23 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
     ```bash
     python scripts/patch-nro-gpu-clock.py path/to/sts2.nro
     ```
-- **Selective preloading & parallel core combat VFX (`patches/STS2Switch/PreloadPatches.cs`):**
+- **Blank screen during enemy attacks & scene-baked GPU particle fix (`patches/STS2Switch/ScreenVfxPatches.cs`):**
+  - With `skip_compute 1` (required to prevent NVK GM20B GPU hangs on `ParticlesShaderRD`), full-screen `BackBufferCopy` overlays sampling `hint_screen_texture, filter_linear_mipmap` read black (`vec3(0.0)`) and blank the entire screen during enemy attacks (`NRadialBlurVfx` on `ShrinkerBeetle`, `BygoneEffigy`, `CeremonialBeast`, `MechaKnight`, `Vantom`) and `DoomPower` (`NDoomOverlayVfx`).
+  - Prefixes `NRadialBlurVfx._Ready`/`Activate` and `NDoomOverlayVfx._Ready`/`PlayVfx` to disable them cleanly, and installs a lightweight `SceneTree.NodeAdded` guard that disables every `BackBufferCopy` (`CopyMode = Disabled`) and every scene-baked `GpuParticles2D` (`emitting=true` in `.tscn`, such as Regent ×6, Fogmog ×3, Vantom ×52, The Insatiable ×68, Waterfall Giant ×182) before its first frame renders.
+- **Selective preloading, parallel core combat VFX & warm asset retention (`patches/STS2Switch/PreloadPatches.cs`):**
   - Skips `'Common'` bulk background preloading (~792 assets on Main Menu that clogged `NAssetLoader`'s FIFO queue for 90–130s when starting a run).
-  - Allowlists essential run/combat/room/character/shader/material assets + the ~21 universal combat VFX scenes (`vfx_attack_slash`, `vfx_damage_num`, `vfx_block`, `vfx_block_broken`, `vfx_card_fly`, `vfx_card_shuffle_fly`, etc.) and loads them **in parallel** (`AssetLoadingSession.IsVfxScene` → `false`) instead of serially one-by-one.
-  - Preserves on-demand `CommonAssets` / `RunSet` assets across room transitions (`AssetCache.UnloadMissedCacheAssets`) while letting `LoadAssetSets` continue unloading old-room monsters and FTUEs cleanly.
+  - Allowlists essential run/combat/room/character/shader/material/power-icon/card-selection assets + ~52 universal combat VFX scenes loaded **in parallel** (`AssetLoadingSession.IsVfxScene` → `false`) instead of serially one-by-one.
+  - Keeps reusable lightweight assets (`images/powers/`, `images/packed/`, `images/ui/`, `scenes/ui/`, `scenes/cards/`, `scenes/combat/`, `materials/`, `shaders/`, loaded VFX) permanently warm across room transitions (`AssetCache.UnloadMissedCacheAssets` + filtered `AssetCache.UnloadAssets`), while still unloading heavy room-specific backgrounds, encounters, events, and old monster visuals to keep RAM/VRAM lean.
   - Skips `OneTimeInitialization.PrewarmJit()` (no JIT under NativeAOT), skips the boot intro logo (`LaunchMainMenu`), and caps `NTransition` `FadeOut`/`FadeIn` to `0.25s`.
 - **Frame pacing & focus crash fix (`patches/STS2Switch/PerformancePatches.cs`, `ParticlePatches.cs`):**
-  - Guards `Godot.Control.GrabFocus()` against detached/invalid/unfocusable controls, fixing the mid-combat `Viewport::_gui_remove_focus_for_window` crash (`01795245857`) and eliminating all 35-frame `"This control can't grab focus"` backtrace SD-card stutters.
+  - Guards `Godot.Control.GrabFocus()` against detached/invalid/unfocusable controls (including `GetFocusModeWithOverride()` for `FocusBehaviorRecursive`), fixing the mid-combat `Viewport::_gui_remove_focus_for_window` crash (`01795245857`) and eliminating `"This control can't grab focus"` backtrace SD-card stutters.
   - Keeps Godot Vulkan `VSync: Disabled` + `MaxFps: 60` so Switch `NWindow` (`swap_interval = 1`) handles display sync once without double-blocking FIFO stalls (proven 10× fewer stalls on hardware: 0.19% vs 1.99%), cuts physics to `30 Hz`, and disables root viewport AA/debanding.
-  - Hides and stops `_process` on suppressed `GpuParticles2D` nodes (`ParticlePatches.cs`) and smooths main-thread finalizer draining to 16 objects/frame (`FinalizerSafetyPatches.cs`).
-  - Keeps compact balanced `-O` AOT codegen (`111.8 MB`, `LOAD span: 135.1 MB`) for optimal Tegra X1 L1/L2 cache fit.
+  - Hides and stops `_process` on suppressed `GpuParticles2D` nodes (`ParticlePatches.cs`) and smooths main-thread finalizer draining to 8 objects/frame (32/frame on large bursts > 512) in `FinalizerSafetyPatches.cs`.
+  - Keeps compact balanced `-O` AOT codegen (`~112 MB`, `LOAD span: ~135 MB`) for optimal Tegra X1 L1/L2 cache fit.
 - **Tuned Switch configs (`configs/config.txt` & `configs/override.cfg`):**
-  - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`).
+  - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`, `mem_trend 0`, `run/flush_stdout_on_print=false`, `always_track_call_stacks=false`).
   - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 0`, `gc_region_range_mb 384`).
-  - Sets `resolution_height 540` and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
+  - Sets `resolution_height 540`, `swapchain_image_count=3`, `frame_queue_size=3`, `pipeline_cache/save_chunk_size_mb=1` (eliminating 8 MB SD write spikes), `staging_buffer/block_size_kb=512`, `strip_debug=true`, and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
 
 ### 3. Native Windows Build (No Docker or WSL Required)
 - **`scripts/build-windows-native.ps1`** replicates `scripts/docker-entry.sh` directly on Windows using portable:

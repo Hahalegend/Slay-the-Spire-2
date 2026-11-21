@@ -53,10 +53,10 @@ public static class FinalizerSafetyPatches
         if (count == 0)
             return;
 
-        // Spread cleanup gently across frames during normal play (16/frame)
-        // so native disposal never creates frame-time spikes, while ramping
-        // up to 128/frame if a room/act unload queued a large burst.
-        int budget = count > 256 ? 128 : 16;
+        // Spread cleanup gently across frames during normal play (8/frame)
+        // so native disposal stays sub-millisecond and never causes micro-stutters,
+        // while ramping up to 32/frame if a room/act unload queued a large burst.
+        int budget = count > 512 ? 32 : 8;
         int drained = 0;
         while (drained < budget && PendingDispose.TryDequeue(out var obj))
         {

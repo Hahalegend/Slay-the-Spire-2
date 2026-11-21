@@ -7,16 +7,13 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
 
-[SwitchPatches(Note = "Fast Switch boot, allowlisted preloading + core combat VFX, and snappy transitions")]
+[SwitchPatches(Note = "Fast Switch boot, allowlisted preloading + core combat VFX, warm cache retention, and snappy transitions")]
 public static class PreloadPatches
 {
-    private static FieldInfo? _missedCacheField;
-    private static bool _missedCacheFieldResolved;
 
     // Core universal VFX fired in almost every combat, reward, or map transition.
     // Preloading ONLY these (~28 scenes, loaded in parallel) avoids mid-combat
@@ -57,6 +54,25 @@ public static class PreloadPatches
         "power_flash_vfx",
         "rare_glow_vfx",
         "vfx_card_transform",
+        "vfx_attack_blunt",
+        "vfx_slime_impact",
+        "vfx_big_slash",
+        "vfx_scratch_impact",
+        "vfx_poison_impact",
+        "vfx_bloody_impact",
+        "vfx_goopy_impact",
+        "vfx_card_smith",
+        "spike_splash_vfx",
+        "fg_ground_spike_vfx",
+        "bg_ground_spike_vfx",
+        "vfx_heavy_blunt",
+        "vfx_scream",
+        "vfx_spooky_scream",
+        "vfx_flying_slash",
+        "vfx_gaseous_impact",
+        "vfx_sandy_impact",
+        "vfx_spore_impact",
+        "vfx_wormy_impact",
     };
 
     // ------------------------------------------------------------------
@@ -129,10 +145,12 @@ public static class PreloadPatches
         }
 
         // Core run, combat, map, reward, hover-tip, orb, character Spine, shader,
-        // material, and combat UI assets (eliminates in-run stutter misses).
+        // material, power icons, and combat UI assets (eliminates in-run stutter misses).
         if (path.Equals("res://scenes/run.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/screens/main_menu.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/screens/game_over_screen.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.Equals("res://scenes/screens/rewards_screen.tscn", StringComparison.OrdinalIgnoreCase) ||
-            path.Equals("res://scenes/screens/card_selection/card_reward_selection_screen.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/screens/card_selection/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/rooms/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/creature_visuals/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/cards/", StringComparison.OrdinalIgnoreCase) ||
@@ -153,12 +171,15 @@ public static class PreloadPatches
             path.Equals("res://scenes/ui/act_banner.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.Equals("res://scenes/ui/generic_popup.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/merchant/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/powers/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/map/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/combat_ui/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/map/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/sprite_fonts/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/combat/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/reward_screen/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/rest_site/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/ui/run_history/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/cards/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/transitions/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/ui/", StringComparison.OrdinalIgnoreCase) ||
@@ -212,25 +233,50 @@ public static class PreloadPatches
     }
 
     // ------------------------------------------------------------------
-    // 3. Preserve reusable on-demand assets across room transitions
+    // 3. Preserve reusable assets across room transitions so power icons,
+    //    sprite fonts, UI panels, shaders, and combat VFX are never evicted
+    //    and synchronously re-read from the Switch SD card mid-combat.
+    //    Heavy room-only assets (backgrounds, encounters, old monster visuals,
+    //    events) still unload normally between rooms to keep VRAM/RAM lean.
     // ------------------------------------------------------------------
     [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetCache", "UnloadMissedCacheAssets")]
-    public static bool PreserveReusableMissedAssets(object __instance)
+    public static bool PreserveReusableMissedAssets()
     {
-        if (!_missedCacheFieldResolved)
-        {
-            _missedCacheField = __instance.GetType().GetField(
-                "_missedCacheAssets",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            _missedCacheFieldResolved = true;
-        }
-
-        if (_missedCacheField?.GetValue(__instance) is HashSet<string> missed && missed.Count > 0)
-        {
-            missed.Clear();
-        }
-
+        // Keep _missedCacheAssets intact so AssetCache.UnloadAssets also skips
+        // any on-demand asset loaded during combat instead of evicting it.
         return false;
+    }
+
+    [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetCache", "UnloadAssets")]
+    public static bool KeepReusableAssetsWarm(ref IEnumerable<string> __arg0)
+    {
+        if (__arg0 is null)
+            return false;
+
+        var toUnload = new List<string>();
+        foreach (var path in __arg0)
+        {
+            if (string.IsNullOrEmpty(path))
+                continue;
+
+            // Only unload heavy room/act-specific assets that change every room.
+            if (path.StartsWith("res://scenes/backgrounds/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://scenes/encounters/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://scenes/events/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://scenes/creature_visuals/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://images/backgrounds/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://images/events/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://images/rooms/", StringComparison.OrdinalIgnoreCase))
+            {
+                toUnload.Add(path);
+            }
+        }
+
+        if (toUnload.Count == 0)
+            return false;
+
+        __arg0 = toUnload;
+        return true;
     }
 
     // ------------------------------------------------------------------
