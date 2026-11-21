@@ -52,6 +52,11 @@ public static class PreloadPatches
         "vfx_thought_bubble",
         "vfx_cross_heal",
         "vfx_heal_num",
+        "star_gain_vfx",
+        "vfx_starry_impact",
+        "power_flash_vfx",
+        "rare_glow_vfx",
+        "vfx_card_transform",
     };
 
     // ------------------------------------------------------------------
@@ -144,10 +149,16 @@ public static class PreloadPatches
             path.StartsWith("res://scenes/ui/map_dot", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/ui/card_reward_", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/ui/character_icons/", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/ui/ancient_name_banner.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/ui/act_banner.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/ui/generic_popup.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/merchant/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/combat_ui/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/map/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/packed/sprite_fonts/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/combat/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/reward_screen/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/ui/rest_site/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/cards/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/transitions/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/ui/", StringComparison.OrdinalIgnoreCase) ||
@@ -161,6 +172,7 @@ public static class PreloadPatches
         if (isRoomOrAct)
         {
             if (path.StartsWith("res://scenes/backgrounds/", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("res://scenes/encounters/", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("res://scenes/events/", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("res://scenes/rest_site/", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("res://scenes/rewards/", StringComparison.OrdinalIgnoreCase) ||

@@ -1,44 +1,65 @@
-// PerformancePatches.cs -- Enforce consistent Switch frame pacing, lower
-// physics/GC overhead, and prevent desktop settings.save defaults from
-// overriding Switch-tuned VSync / FPS caps.
+// PerformancePatches.cs -- Switch runtime tuning backed by hardware A/B tests
+// (boot_stats 2 vs 5) plus a native-crash guard on Godot.Control.GrabFocus().
 //
-// Why this matters on Tegra X1 (4x Cortex-A57 @ 1.02 GHz, GM20B @ 384 MHz):
-//   - NGame.InitializeGraphicsPreferences() runs after override.cfg and overwrote
-//     override.cfg's VSync=On and MaxFps=30 with VSync=Off and MaxFps=60.
-//     Uncapped/60fps VSync-Off saturates the GPU & NVK queue, causing wild
-//     16ms -> 60ms frame-time swings (visible stutter/judder).
-//   - Locking to VSync=Enabled + 30 FPS gives every frame a generous 33.3ms
-//     budget so Spine animations, card drags, and UI updates stay dead-flat.
-//     (Players running sys-clk can still raise FPS Limit live in Settings.)
-//   - Cutting Engine.PhysicsTicksPerSecond from 60 -> 30 halves idle 2D physics
-//     CPU overhead in a turn-based card game.
-//   - Setting GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency keeps
-//     blocking Gen 2 GC sweeps out of active combat (PreloadManager's explicit
-//     GC.Collect() still cleans up cleanly during room fade-outs).
+// Key hardware findings on Tegra X1 + NVK + wsi_switch:
+//   1. main.c already configures Switch NWindow with swap_interval=1 (60 Hz
+//      hardware VSync). Enabling Godot's Vulkan FIFO VSync + MaxFps=30 on top
+//      caused double-waiting (110-135ms stalls every 2-3 frames, 1.99% stall
+//      rate vs 0.19% with VSyncMode.Disabled + MaxFps=60, which ran 7,668
+//      consecutive frames with zero >100ms stalls).
+//   2. Crash report 01795245857 traced a mid-combat crash directly to
+//      NControllerCardPlay.Start -> NodeUtil.TryGrabFocus -> Control.GrabFocus
+//      -> Viewport::_gui_remove_focus_for_window when called on a detached /
+//      freed / FocusMode.None control. Guarding Control.GrabFocus() both
+//      prevents that crash and eliminates the 35-frame C# backtrace warning
+//      stutters logged to SD card.
+//   3. Cutting Engine.PhysicsTicksPerSecond from 60 -> 30 reduces idle 2D
+//      physics CPU overhead without affecting turn-based card gameplay.
 
 using System;
-using System.Runtime;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
 
-[SwitchPatches(Note = "Consistent Switch frame pacing, 30Hz physics, and low-latency GC")]
+[SwitchPatches(Note = "Switch frame pacing (single-sync via NWindow), 30Hz physics, and safe GrabFocus")]
 public static class PerformancePatches
 {
-    private static bool _gcTuned;
+    // ------------------------------------------------------------------
+    // 1. Guard Control.GrabFocus() against detached/invalid/unfocusable controls.
+    //    Fixes 01795245857 (Viewport::_gui_remove_focus_for_window crash) and
+    //    eliminates "This control can't grab focus" backtrace SD-card stutters.
+    // ------------------------------------------------------------------
+    [SwitchPrefix("Godot.Control", "GrabFocus", Optional = true)]
+    public static bool SafeGrabFocus(object __instance)
+    {
+#if HAVE_GODOTSHARP
+        if (__instance is not Godot.Control c)
+            return false;
+        if (!Godot.GodotObject.IsInstanceValid(c) || c.IsQueuedForDeletion())
+            return false;
+        if (!c.IsInsideTree() || !c.IsVisibleInTree())
+            return false;
+        if (c.FocusMode == Godot.Control.FocusModeEnum.None)
+            return false;
+        var vp = c.GetViewport();
+        if (vp is null || !Godot.GodotObject.IsInstanceValid(vp) || !vp.IsInsideTree())
+            return false;
+#endif
+        return true;
+    }
 
     // ------------------------------------------------------------------
-    // 1. Always keep VSync Enabled on Switch (prevents NVK queue saturation
-    //    and tearing/judder when settings.save has VSync=Off).
+    // 2. Keep Godot Vulkan VSync Disabled so wsi_switch / NWindow's
+    //    swap_interval=1 handles display sync once without double-blocking.
     // ------------------------------------------------------------------
     [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.NGame", "ApplySyncSetting")]
-    public static bool ForceVsyncOn()
+    public static bool SingleSyncViaNWindow()
     {
 #if HAVE_GODOTSHARP
         try
         {
-            Godot.DisplayServer.WindowSetVsyncMode(Godot.DisplayServer.VSyncMode.Enabled, 0);
-            SwitchLog.Info("PerformancePatches: enforced VSync=Enabled");
+            Godot.DisplayServer.WindowSetVsyncMode(Godot.DisplayServer.VSyncMode.Disabled, 0);
+            SwitchLog.Info("PerformancePatches: Godot VSync=Disabled (single-sync via Switch NWindow swap_interval=1)");
         }
         catch { }
 #endif
@@ -46,8 +67,7 @@ public static class PerformancePatches
     }
 
     // ------------------------------------------------------------------
-    // 2. Enforce Switch frame pacing, 30 Hz physics, and low-latency GC
-    //    right after NGame.InitializeGraphicsPreferences() runs.
+    // 3. Tune MaxFps, 30 Hz physics, and root viewport AA after display init.
     // ------------------------------------------------------------------
     [SwitchPostfix("MegaCrit.Sts2.Core.Nodes.NGame", "InitializeGraphicsPreferences")]
     public static void TuneGraphicsAndRuntime()
@@ -55,8 +75,6 @@ public static class PerformancePatches
         ApplySwitchRuntimeTuning("startup");
     }
 
-    // Re-apply 30 FPS cap when returning from sleep/HOME (ExitBackgroundMode
-    // restores SettingsSave.FpsLimit which may be 60/0).
     [SwitchPostfix("MegaCrit.Sts2.Core.Nodes.NBackgroundModeHandler", "ExitBackgroundMode",
                    Optional = true)]
     public static void ReapplyAfterBackground()
@@ -69,10 +87,7 @@ public static class PerformancePatches
 #if HAVE_GODOTSHARP
         try
         {
-            // Default to locked 30 FPS for rock-solid 33.3ms frame pacing on
-            // stock Switch clocks (can be overridden via STS2_MAX_FPS env or
-            // live via in-game Settings -> FPS Limit when using sys-clk).
-            int targetFps = 30;
+            int targetFps = 60;
             var envFps = Environment.GetEnvironmentVariable("STS2_MAX_FPS");
             if (!string.IsNullOrEmpty(envFps) && int.TryParse(envFps, out int parsed) && parsed >= 20 && parsed <= 60)
                 targetFps = parsed;
@@ -81,7 +96,6 @@ public static class PerformancePatches
             Godot.Engine.PhysicsTicksPerSecond = 30;
             Godot.Engine.MaxPhysicsStepsPerFrame = 2;
 
-            // Ensure root viewport never burns GM20B fillrate on MSAA / SSAA / debanding.
             if (Godot.Engine.GetMainLoop() is Godot.SceneTree tree && tree.Root is Godot.Window root)
             {
                 root.Msaa2D = Godot.Viewport.Msaa.Disabled;
@@ -90,20 +104,9 @@ public static class PerformancePatches
                 root.UseDebanding = false;
             }
 
-            SwitchLog.Info($"PerformancePatches ({reason}): MaxFps={targetFps}, PhysicsHz=30, VSync=Enabled, AA=Off");
+            SwitchLog.Info($"PerformancePatches ({reason}): MaxFps={targetFps}, PhysicsHz=30, SingleSync=NWindow, AA=Off");
         }
         catch { }
 #endif
-
-        if (!_gcTuned)
-        {
-            _gcTuned = true;
-            try
-            {
-                GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-                SwitchLog.Info("PerformancePatches: GCSettings.LatencyMode = SustainedLowLatency");
-            }
-            catch { }
-        }
     }
 }
