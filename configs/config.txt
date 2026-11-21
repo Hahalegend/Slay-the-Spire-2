@@ -21,11 +21,13 @@ resolution_height 540
 # - nvk_cmd_mem_uncached 1: prevents NVK GPFIFO prefetch stale-memory hangs during gameplay
 #   (keep nvk_mem_stream_uncached 0 -- uncaching streaming vertex/uniform writes causes 100-200ms frame stalls!)
 # - gc_region_range_mb 384: must stay >= DOTNET_GCHeapHardLimit (352 MB) so GC never runs out of region space
+# - thread_stack_kb 2048: 2 MB stack floor for Godot worker threads loading deep nested .tscn scenes
 gpu_particles 0
 skip_compute 1
 nvk_cmd_mem_uncached 1
 nvk_mem_stream_uncached 0
 gc_region_range_mb 384
+thread_stack_kb 2048
 
 # Renderer: Vulkan mobile (set enable_vulkan 0 to test GLES3 if Vulkan still crashes mid-run)
 enable_vulkan 1

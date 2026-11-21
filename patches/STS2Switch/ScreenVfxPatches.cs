@@ -114,23 +114,32 @@ public static class ScreenVfxPatches
 
     private static void OnNodeAdded(Godot.Node node)
     {
-        if (node is Godot.BackBufferCopy bbc)
-        {
-            bbc.CopyMode = Godot.BackBufferCopy.CopyModeEnum.Disabled;
-            bbc.Visible = false;
-            bbc.SetProcess(false);
-            bbc.SetPhysicsProcess(false);
-            s_disabledBackBuffers++;
+        if (node is null || !Godot.GodotObject.IsInstanceValid(node))
             return;
-        }
 
-        if (!s_allowGpuParticles && node is Godot.GpuParticles2D p)
+        try
         {
-            p.Emitting = false;
-            p.Visible = false;
-            p.SetProcess(false);
-            p.SetPhysicsProcess(false);
-            s_disabledGpuParticles++;
+            if (node is Godot.BackBufferCopy bbc)
+            {
+                bbc.CopyMode = Godot.BackBufferCopy.CopyModeEnum.Disabled;
+                bbc.Visible = false;
+                bbc.SetProcess(false);
+                bbc.SetPhysicsProcess(false);
+                s_disabledBackBuffers++;
+                return;
+            }
+
+            if (!s_allowGpuParticles && node is Godot.GpuParticles2D p)
+            {
+                p.Emitting = false;
+                p.Visible = false;
+                p.SetProcess(false);
+                p.SetPhysicsProcess(false);
+                s_disabledGpuParticles++;
+            }
+        }
+        catch
+        {
         }
     }
 

@@ -6,14 +6,20 @@
 //   - Allowlist + core combat VFX (parallel):  14.2s (9.3x faster, 0 core combat VFX misses)
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Reflection;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
 
-[SwitchPatches(Note = "Fast Switch boot, allowlisted preloading + core combat VFX, warm cache retention, and snappy transitions")]
+[SwitchPatches(Note = "Fast Switch boot, serialized thread-safe preloading, warm cache retention, and snappy transitions")]
 public static class PreloadPatches
 {
+    private static FieldInfo? _loadingField;
+    private static FieldInfo? _toLoadField;
+    private static FieldInfo? _cacheField;
+    private static bool _sessionFieldsResolved;
 
     // Core universal VFX fired in almost every combat, reward, or map transition.
     // Preloading ONLY these (~28 scenes, loaded in parallel) avoids mid-combat
@@ -56,23 +62,10 @@ public static class PreloadPatches
         "vfx_card_transform",
         "vfx_attack_blunt",
         "vfx_slime_impact",
-        "vfx_big_slash",
-        "vfx_scratch_impact",
-        "vfx_poison_impact",
-        "vfx_bloody_impact",
-        "vfx_goopy_impact",
         "vfx_card_smith",
         "spike_splash_vfx",
         "fg_ground_spike_vfx",
         "bg_ground_spike_vfx",
-        "vfx_heavy_blunt",
-        "vfx_scream",
-        "vfx_spooky_scream",
-        "vfx_flying_slash",
-        "vfx_gaseous_impact",
-        "vfx_sandy_impact",
-        "vfx_spore_impact",
-        "vfx_wormy_impact",
     };
 
     // ------------------------------------------------------------------
@@ -171,15 +164,12 @@ public static class PreloadPatches
             path.Equals("res://scenes/ui/act_banner.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.Equals("res://scenes/ui/generic_popup.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/merchant/", StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith("res://images/powers/", StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith("res://images/map/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/combat_ui/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/map/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/packed/sprite_fonts/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/combat/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/reward_screen/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://images/ui/rest_site/", StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith("res://images/ui/run_history/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/cards/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/transitions/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/ui/", StringComparison.OrdinalIgnoreCase) ||
@@ -223,14 +213,61 @@ public static class PreloadPatches
     }
 
     // ------------------------------------------------------------------
-    // 2. Load the ~28 kept core VFX scenes in parallel instead of 1-by-1
+    // 2. Route kept core VFX into the main loading queue AND cap concurrent
+    //    ResourceLoader.LoadThreadedRequest() calls to 1 in flight at a time.
+    //
+    //    Why: stock ProcessLoadingQueue() fires up to 128 concurrent
+    //    LoadThreadedRequest()s across Godot's WorkerThreadPool threads.
+    //    Crash 01795253244 caught 3 worker threads simultaneously racing
+    //    inside FileAccessPack::open_internal -> RefCounted::unreference()
+    //    against devkitPro's non-thread-safe file handle table.
+    //    Capping to 1 in-flight background load eliminates both the crash
+    //    AND microSD multi-thread seek thrashing while staying non-blocking!
     // ------------------------------------------------------------------
     [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "IsVfxScene")]
-    public static bool LoadVfxInParallel(ref bool __result)
+    public static bool LoadVfxThroughMainQueue(ref bool __result)
     {
         __result = false;
         return false;
     }
+
+#if HAVE_GODOTSHARP
+    [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "ProcessLoadingQueue")]
+    public static bool SerializeThreadedLoading(object __instance)
+    {
+        if (!_sessionFieldsResolved)
+        {
+            var t = __instance.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            _loadingField = t.GetField("_loading", flags);
+            _toLoadField = t.GetField("_toLoad", flags);
+            _cacheField = t.GetField("_cache", flags);
+            _sessionFieldsResolved = true;
+        }
+
+        if (_loadingField?.GetValue(__instance) is not Queue<string> loading ||
+            _toLoadField?.GetValue(__instance) is not Queue<string> toLoad ||
+            _cacheField?.GetValue(__instance) is not ConcurrentDictionary<string, Godot.Resource> cache)
+        {
+            return true;
+        }
+
+        while (loading.Count < 1 && toLoad.TryDequeue(out string? path))
+        {
+            if (string.IsNullOrEmpty(path) || cache.ContainsKey(path))
+                continue;
+
+            var err = Godot.ResourceLoader.LoadThreadedRequest(
+                path, "", false, Godot.ResourceLoader.CacheMode.Reuse);
+            if (err == Godot.Error.Ok)
+                loading.Enqueue(path);
+            else
+                SwitchLog.Error($"PreloadPatches: LoadThreadedRequest failed ({err}) for {path}");
+        }
+
+        return false;
+    }
+#endif
 
     // ------------------------------------------------------------------
     // 3. Preserve reusable assets across room transitions so power icons,
