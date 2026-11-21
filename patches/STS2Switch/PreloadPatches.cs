@@ -231,10 +231,19 @@ public static class PreloadPatches
     {
         isCoreVfx = false;
 
-        // VFX scenes/materials/shaders: keep ONLY the ~28 universal combat/reward VFX
-        // so gameplay is smooth while skipping ~285 rare card/boss/event VFX.
+        // VFX scenes/materials/shaders:
+        // - During room/act preloads (e.g. 'Combat Room'), keep ALL room-specific
+        //   VFX requested for that fight's monsters (typically 2-6 files) so enemy
+        //   attacks never stall 350-450ms loading synchronously from microSD mid-turn.
+        // - During Embark ('characters=*'), keep ONLY the ~39 universal combat VFX
+        //   so Embark stays fast (~10s) while skipping ~285 rare card/boss/event VFX.
         if (path.Contains("/vfx/", StringComparison.OrdinalIgnoreCase))
         {
+            if (isRoomOrAct)
+            {
+                isCoreVfx = true;
+                return true;
+            }
             if (path.EndsWith(".tscn", StringComparison.OrdinalIgnoreCase) && IsCoreCombatVfx(path))
             {
                 isCoreVfx = true;

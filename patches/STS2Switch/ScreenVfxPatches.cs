@@ -65,7 +65,18 @@ public static class ScreenVfxPatches
 
     // ------------------------------------------------------------------
     // 2. Suppress NDoomOverlayVfx (same BackBufferCopy + mipmap screen_texture)
+    //    Prefix GetOrCreate() to return null (matching stock TestMode.IsOn)
+    //    so NDoomOverlayVfx is never instantiated and can never leave a stale
+    //    disposed static _instance across combats (which caused DoomPower
+    //    ObjectDisposedException / StuckCombatException on Combat #2).
     // ------------------------------------------------------------------
+    [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.Vfx.NDoomOverlayVfx", "GetOrCreate", Optional = true)]
+    public static bool SkipDoomOverlayGetOrCreate(ref object? __result)
+    {
+        __result = null;
+        return false;
+    }
+
     [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.Vfx.NDoomOverlayVfx", "_Ready", Optional = true)]
     public static bool DisableDoomOverlayReady(object __instance)
     {
@@ -145,12 +156,19 @@ public static class ScreenVfxPatches
 
     private static void DisableBackBufferNode(object instance)
     {
-        if (instance is Godot.BackBufferCopy bbc)
+        if (instance is not Godot.BackBufferCopy bbc || !Godot.GodotObject.IsInstanceValid(bbc))
+            return;
+
+        try
         {
             bbc.CopyMode = Godot.BackBufferCopy.CopyModeEnum.Disabled;
             bbc.Visible = false;
             bbc.SetProcess(false);
             bbc.SetPhysicsProcess(false);
+        }
+        catch
+        {
+            // Never throw ObjectDisposedException into combat/VFX coroutines.
         }
     }
 #endif
