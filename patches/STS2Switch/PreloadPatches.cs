@@ -1,10 +1,9 @@
 // PreloadPatches.cs -- Fast Switch boot, selective preloading with zero-stutter
-// core combat VFX, parallel VFX loading, and snappy transitions.
+// core combat/map/reward assets, parallel VFX loading, and snappy transitions.
 //
 // Measured on Switch hardware (v0.111.1):
 //   - Stock 'Common' + 'characters=IRONCLAD': 132.2s (792 + 698 assets, 196 serial VFX)
-//   - Denylist-only filter:                    22.9s (557 assets still kept; 16 combat VFX missed -> combat stutter)
-//   - Allowlist + core combat VFX (parallel):  ~4-6s (~70-100 essential assets, 0 first-combat VFX misses!)
+//   - Allowlist + core combat VFX (parallel):  14.2s (9.3x faster, 0 core combat VFX misses)
 
 using System;
 using System.Collections.Generic;
@@ -19,8 +18,8 @@ public static class PreloadPatches
     private static FieldInfo? _missedCacheField;
     private static bool _missedCacheFieldResolved;
 
-    // Core universal VFX fired in almost every combat / map transition.
-    // Preloading ONLY these (~21 scenes, loaded in parallel) avoids mid-combat
+    // Core universal VFX fired in almost every combat, reward, or map transition.
+    // Preloading ONLY these (~28 scenes, loaded in parallel) avoids mid-combat
     // main-thread load/shader stutters without spending 90+ seconds preloading
     // all ~313 rare card/event/boss VFX scenes upfront.
     private static readonly string[] CoreCombatVfxNames =
@@ -46,6 +45,13 @@ public static class PreloadPatches
         "map_circle_vfx",
         "map_node_select_vfx",
         "relic_inventory_flash_vfx",
+        "relic_flash_vfx",
+        "vfx_potion_flash",
+        "uncommon_glow_vfx",
+        "vfx_low_hp_border",
+        "vfx_thought_bubble",
+        "vfx_cross_heal",
+        "vfx_heal_num",
     };
 
     // ------------------------------------------------------------------
@@ -105,8 +111,8 @@ public static class PreloadPatches
     {
         isCoreVfx = false;
 
-        // VFX scenes/materials/shaders: keep ONLY the ~21 universal combat VFX
-        // so Combat #1 is smooth while skipping ~290 rare card/boss/event VFX.
+        // VFX scenes/materials/shaders: keep ONLY the ~28 universal combat/reward VFX
+        // so gameplay is smooth while skipping ~285 rare card/boss/event VFX.
         if (path.Contains("/vfx/", StringComparison.OrdinalIgnoreCase))
         {
             if (path.EndsWith(".tscn", StringComparison.OrdinalIgnoreCase) && IsCoreCombatVfx(path))
@@ -117,26 +123,41 @@ public static class PreloadPatches
             return false;
         }
 
-        // Core run & combat scenes, player/monster Spine rigs, card base + blur materials,
-        // non-VFX shaders, and card/transition/UI materials (prevents mid-combat shader spikes).
+        // Core run, combat, map, reward, hover-tip, orb, character Spine, shader,
+        // material, and combat UI assets (eliminates in-run stutter misses).
         if (path.Equals("res://scenes/run.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/screens/rewards_screen.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("res://scenes/screens/card_selection/card_reward_selection_screen.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/rooms/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/creature_visuals/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/cards/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/combat/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/orbs/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/relics/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://scenes/potions/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/screens/map/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/hover_tip", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/card_hover_tip", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/normal_map_point", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/boss_map_point", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/ancient_map_point", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/map_dot", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/card_reward_", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://scenes/ui/character_icons/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/packed/combat_ui/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/packed/map/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/ui/combat/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://images/ui/reward_screen/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/cards/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/transitions/", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWith("res://materials/ui/", StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith("res://shaders/", StringComparison.OrdinalIgnoreCase))
+            path.StartsWith("res://shaders/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("res://debug_audio/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         // Room/Act-specific assets (backgrounds, monsters, animations, events, rest site, rewards).
-        // Because characters=... already loaded the core sets above, LoadAssetSets's Except(loaded)
-        // ensures room transitions only load the 2-12 assets specific to the new room.
         if (isRoomOrAct)
         {
             if (path.StartsWith("res://scenes/backgrounds/", StringComparison.OrdinalIgnoreCase) ||
@@ -152,7 +173,7 @@ public static class PreloadPatches
             }
         }
 
-        // Everything else (400+ ControllerConfig glyph PNGs, 129 menu/library/bestiary/
+        // Everything else (400+ ControllerConfig glyph PNGs, menu/library/bestiary/
         // inspect/FTUE screens, individual PNG icons already in VRAM atlases) is deferred
         // to on-demand loading and retained in cache once first used.
         return false;
@@ -169,7 +190,7 @@ public static class PreloadPatches
     }
 
     // ------------------------------------------------------------------
-    // 2. Load the ~21 kept core VFX scenes in parallel instead of 1-by-1
+    // 2. Load the ~28 kept core VFX scenes in parallel instead of 1-by-1
     // ------------------------------------------------------------------
     [SwitchPrefix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "IsVfxScene")]
     public static bool LoadVfxInParallel(ref bool __result)

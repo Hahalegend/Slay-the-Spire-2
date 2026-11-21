@@ -17,12 +17,13 @@ resolution_height 540
 
 # Stability:
 # - skip_compute 1: drops ParticlesShaderRD compute dispatches that hang NVK on GM20B
-# - nvk_cmd_mem_uncached 1 / nvk_mem_stream_uncached 1: prevents NVK stale-memory GPU hangs
+# - nvk_cmd_mem_uncached 1: prevents NVK GPFIFO prefetch stale-memory hangs
+#   (keep nvk_mem_stream_uncached 0 -- uncaching streaming vertex/uniform writes causes frame stalls)
 # - gc_region_range_mb 384: must stay >= DOTNET_GCHeapHardLimit (352 MB)
 gpu_particles 0
 skip_compute 1
 nvk_cmd_mem_uncached 1
-nvk_mem_stream_uncached 1
+nvk_mem_stream_uncached 0
 gc_region_range_mb 384
 
 # Renderer: Vulkan mobile

@@ -12,6 +12,7 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
 - **Sentry module-initializer crash fix (`PlatformPatches.cs`):** Steam `v0.111.1` introduced `[ModuleInitializer]` hooks in `Sentry.Godot.Internal.SentryGodotInitializer.AutoInit` / `SentryAutoInit.Init` that call `Console.WriteLine` during startup and fail-fast on Switch (`ConsolePal.EnsureInitializedCore`). Stubbed alongside `SentryBootstrap._EnterTree` and newer `SentryService` methods (`AfterGameInit`, `SetPlatformBranch`, `SetTag`, `SetExtra`, `OnLogCallback`, `DisableSentryIfModded`).
 - **`ModelDb` two-phase init fix (`ModelDbPatches.cs`):** Steam `v0.111.1` switched `AbstractModel..ctor()`'s duplicate check from `ModelDb.Contains(Type)` to `ModelDb.GetByIdOrNull<AbstractModel>(id) != null`, causing `0/1660` models to construct. Added a guarded `[SwitchPrefix]` on `AbstractModel..ctor` and pre-seeded Fabricator's minions (`MONSTER.STABBOT`, `MONSTER.GUARDBOT`, `MONSTER.NOISEBOT`). Verified **1660/1660** models construct cleanly on Switch hardware.
 - **Quit & Sleep/HOME safety (`LifecyclePatches.cs`):** Guarded `sts2_request_quit` and `sts2_set_game_background` P/Invokes against `EntryPointNotFoundException` when paired with prebuilt `sts2.nro` v1.0.0.
+- **Mid-gameplay crash fix — Main-thread Godot finalizer pump (`FinalizerSafetyPatches.cs`):** Marshals `Finalize()` on `GodotObject`, `Collections.Array`, `Collections.Dictionary`, `StringName`, and `NodePath` from the `.NET` GC Finalizer thread onto the Godot main thread (drained per-frame in `ScriptManagerBridge.FrameCallback()`). Eliminates the native data race where background finalization called `godotsharp_internal_refcounted_disposed` → `CSharpLanguage::_instance_binding_reference_callback` → `RBMap::_erase` concurrently with main-thread room/scene creation and `CanvasItem::_redraw_callback`.
 
 ### 2. Performance, Loading & Frame-Pacing Optimizations
 - **GPU 76.8 MHz throttle fix (`source/util.c` + `scripts/patch-nro-gpu-clock.py`):**
@@ -28,7 +29,7 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
   - Skips `OneTimeInitialization.PrewarmJit()` (no JIT under NativeAOT), skips the boot intro logo (`LaunchMainMenu`), and caps `NTransition` `FadeOut`/`FadeIn` to `0.25s`.
 - **Tuned Switch configs (`configs/config.txt` & `configs/override.cfg`):**
   - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`).
-  - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 1`, `gc_region_range_mb 384`).
+  - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 0`, `gc_region_range_mb 384`).
   - Sets `resolution_height 540` and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
 
 ### 3. Native Windows Build (No Docker or WSL Required)
