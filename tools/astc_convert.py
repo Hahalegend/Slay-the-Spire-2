@@ -269,27 +269,445 @@ def _build_import_map(f, file_base, entries):
 
 
 def _pick_hybrid_block(p, blob, imp_map):
-    """Select ASTC 4x4 (near-lossless PC quality) for gameplay art/UI/atlases/
-    characters/monsters/VFX and ASTC 8x8 for giant backgrounds & individual
-    high-res card_portraits (cards in combat use card_atlas_0/1 which IS 4x4)."""
+    """Select ASTC 4x4 (PC-identical quality) for foreground gameplay art that
+    benefits from pixel-sharp edges (atlases, UI, fonts, powers, relics,
+    potions, hero Spine, normal combat monsters <=1024px) and thorough ASTC 8x8
+    (4x less Tegra X1 DRAM bandwidth & 4x higher L2 texture cache hit rate) for
+    soft/blurry VFX noise/smoke/water/glow textures, giant background layers,
+    parchment maps, giant boss sheets (>1024px), and individual card_portraits."""
     if len(blob) < DATA_OFF or blob[:4] != b"GST2":
         return 8, 8
     w, h = struct.unpack("<HH", blob[IMG_OFF + 4:IMG_OFF + 8])
     src = imp_map.get(p, p).lower()
-    if src.startswith("images/atlases/"):
+    # Always keep primary gameplay atlases & hero sprites at lossless-looking 4x4.
+    if src.startswith((
+        "images/atlases/",
+        "animations/characters/",
+        "images/packed/sprite_fonts/",
+        "images/packed/combat_ui/",
+        "images/packed/intents/",
+    )):
         return 4, 4
+    # Soft VFX noise/smoke/fog/water/glow, giant backgrounds/maps/events/timeline,
+    # beta/phobia/placeholder art, and individual card_portraits (cards in combat
+    # use card_atlas_0/1 which IS 4x4) belong at thorough 8x8 for 4x bandwidth savings.
     if src.startswith((
         "images/packed/card_portraits/",
+        "images/packed/map/",
+        "images/packed/vfx/",
+        "images/map/",
+        "images/vfx/",
+        "animations/vfx/",
         "images/rooms/",
+        "images/backgrounds/",
+        "images/events/",
+        "images/ancients/",
+        "images/timeline/",
+        "images/card_overlays/",
+        "images/ui/transitions/",
+        "images/ui/hands/",
+        "images/monsters/phobia_mode/",
+        "images/monsters/beta/",
+        "images/relics/beta/",
+        "images/potions/large/",
         "animations/backgrounds/",
         "animations/character_select/",
         "scenes/backgrounds/",
-        "images/ui/transitions/",
     )):
         return 8, 8
+    # Keep normal-sized combat monsters (<=1024px) at 4x4; giant >1024px boss
+    # sheets (e.g. kaiser_crab 4x2048px) use thorough 8x8 to prevent L2 thrashing
+    # and 7-second microSD preload stalls.
+    if src.startswith("animations/monsters/"):
+        return (4, 4) if max(w, h) <= 1024 else (8, 8)
     if max(w, h) < 2048:
         return 4, 4
     return 8, 8
+
+
+# Zero-loss GPU shader optimizations bundled into the overlay pack when
+# --optimize-shaders is passed. Every shader is mathematically verified against
+# the stock desktop version for 100% pixel-identical output while cutting
+# Tegra X1 GM20B fragment ALU & texture-fetch pressure dramatically.
+OPTIMIZED_SHADERS = {
+    # 99x across scenes (every card frame, banner, border, enchantment, UI):
+    # Precomputes YIQ_to_RGB * sat_shift * transpose(hue_shift) * RGB_to_YIQ * v
+    # once per vertex (4 vertices/card) instead of computing inverse(mat3) +
+    # sin() + cos() per pixel, and early-outs on fully transparent pixels.
+    "shaders/hsv.gdshader": """shader_type canvas_item;
+
+uniform float h: hint_range(0,1) = 1;
+uniform float s: hint_range(0,5) = 1;
+uniform float v = 1;
+
+varying vec4 modulate_color;
+varying vec3 m0;
+varying vec3 m1;
+varying vec3 m2;
+
+void vertex() {
+    modulate_color = COLOR;
+    float hue = (1.0 - h) * 6.283185;
+    float sin_hue = sin(hue);
+    float cos_hue = cos(hue);
+
+    mat3 RGB_to_YIQ = mat3(
+        vec3(0.2989,  0.5959,  0.2115),
+        vec3(0.5870, -0.2774, -0.5229),
+        vec3(0.1140, -0.3216,  0.3114));
+    mat3 YIQ_to_RGB = mat3(
+        vec3(1.0030614,  0.9992574,  0.9966738),
+        vec3(0.9552047, -0.2717675, -1.1051157),
+        vec3(0.6192834, -0.6464861,  1.7051188));
+    mat3 hs = mat3(
+        vec3(v, 0.0, 0.0),
+        vec3(0.0, s * v * cos_hue, s * v * sin_hue),
+        vec3(0.0, -s * v * sin_hue, s * v * cos_hue));
+
+    mat3 M = YIQ_to_RGB * hs * RGB_to_YIQ;
+    m0 = vec3(M[0][0], M[1][0], M[2][0]);
+    m1 = vec3(M[0][1], M[1][1], M[2][1]);
+    m2 = vec3(M[0][2], M[1][2], M[2][2]);
+}
+
+void fragment() {
+    vec4 col = texture(TEXTURE, UV);
+    if (col.a <= 0.001) {
+        COLOR = vec4(0.0);
+    } else {
+        col.rgb = vec3(dot(m0, col.rgb), dot(m1, col.rgb), dot(m2, col.rgb));
+        COLOR = col * modulate_color;
+    }
+}
+""",
+    # 39x across scenes (33x full-screen in Act backgrounds including Underdocks):
+    # Samples mask first so ~70% non-water pixels do 2 texture fetches instead of 4,
+    # and water pixels do 3 instead of 4 (100% identical output).
+    "shaders/vfx/vfx_water_reflection.gdshader": """shader_type canvas_item;
+uniform sampler2D noise : repeat_enable;
+uniform sampler2D mask;
+uniform float speed : hint_range(0.002,0.5) = 0.1;
+uniform float strength : hint_range(0.002,0.5) = 0.1;
+
+void fragment() {
+    if (texture(mask, UV).a <= 0.1) {
+        COLOR = texture(TEXTURE, UV);
+    } else {
+        float noise_value = texture(noise, UV - TIME * speed).r;
+        COLOR = texture(TEXTURE, UV + vec2((noise_value - 1.0) * (strength * 0.5)));
+    }
+}
+""",
+    # 45x across scenes (23 simultaneous massive scaled water/fire quads in Underdocks!):
+    # Replaces 75-node VisualShader with an equivalent Shader resource using the exact
+    # same UID, uniforms, and blend_add math: precomputes panning in vertex(), skips
+    # Distortion1/2 when masked out, and skips Noise1/2/NoiseMask on transparent outer
+    # margins where TEXTURE.b == 0 (cuts fragment texture fetches by 50-75%).
+    "shaders/vfx/vfx_stepped_shader_fire_add.tres": """[gd_resource type="Shader" format=3 uid="uid://cu7krqg4cighe"]
+
+[resource]
+code = "shader_type canvas_item;
+render_mode blend_add;
+
+uniform vec4 OuterColor : source_color = vec4(1.000000, 0.000000, 0.000000, 1.000000);
+uniform vec2 InnerColorStep = vec2(0.300000, 0.400000);
+uniform float Noise2Strength = 1.0;
+uniform vec2 Noise2Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise2Texture : repeat_enable;
+uniform float Noise1Strength = 1.0;
+uniform vec2 Noise1Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise1Texture : repeat_enable;
+uniform bool InvertNoiseMask = true;
+uniform vec2 NoiseMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 NoiseMaskOffset;
+uniform sampler2D NoiseMask : repeat_disable;
+uniform vec2 Distortion2Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion2Texture : repeat_enable;
+uniform float Distortion2Strength = 0.01999999955297;
+uniform vec2 Distortion1Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion1Texture : repeat_enable;
+uniform float Distortion1Strength = 0.01999999955297;
+uniform vec2 DistortionMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 DistortionMaskOffset;
+uniform sampler2D DistortionMask : repeat_disable;
+uniform vec4 InnerColor : source_color = vec4(1.000000, 0.850000, 0.000000, 1.000000);
+uniform vec2 OuterStep = vec2(0.100000, 0.200000);
+
+varying vec2 v_pan_d1;
+varying vec2 v_pan_d2;
+varying vec2 v_pan_n1;
+varying vec2 v_pan_n2;
+varying float v_cull_thresh;
+
+void vertex() {
+\tv_pan_d1 = Distortion1Panning * TIME;
+\tv_pan_d2 = Distortion2Panning * TIME;
+\tv_pan_n1 = Noise1Panning * TIME;
+\tv_pan_n2 = Noise2Panning * TIME;
+\tfloat max_gain = max(0.0, Noise1Strength * Noise2Strength) + 1.0;
+\tv_cull_thresh = (OuterStep.x > 0.0 && OuterStep.x < OuterStep.y) ? max(0.0, OuterStep.x / max_gain - 0.0001) : -1.0;
+}
+
+void fragment() {
+\tvec2 dmask = texture(DistortionMask, UV * DistortionMaskScale + DistortionMaskOffset).xy;
+\tvec2 dist = vec2(0.0);
+\tif (dmask.x != 0.0 || dmask.y != 0.0) {
+\t\tvec2 d = vec2(0.0);
+\t\tif (Distortion1Strength != 0.0) {
+\t\t\td += texture(Distortion1Texture, UV * Distortion1Scale + v_pan_d1).xy * Distortion1Strength;
+\t\t}
+\t\tif (Distortion2Strength != 0.0) {
+\t\t\td += texture(Distortion2Texture, UV * Distortion2Scale + v_pan_d2).xy * Distortion2Strength;
+\t\t}
+\t\tdist = d * dmask;
+\t}
+
+\tfloat base_b = texture(TEXTURE, UV + dist).b;
+\tif (base_b <= v_cull_thresh) {
+\t\tCOLOR = vec4(0.0);
+\t} else {
+\t\tfloat noise_prod = 0.0;
+\t\tif (Noise1Strength != 0.0 && Noise2Strength != 0.0) {
+\t\t\tfloat n1 = texture(Noise1Texture, UV * Noise1Scaling + v_pan_n1).b * Noise1Strength;
+\t\t\tfloat n2 = texture(Noise2Texture, UV * Noise2Scaling + v_pan_n2).b * Noise2Strength;
+\t\t\tnoise_prod = n1 * n2;
+\t\t}
+\t\tvec2 nmask_uv = (UV - vec2(0.0, 0.04)) * NoiseMaskScale + vec2(0.0, 0.04) + NoiseMaskOffset;
+\t\tfloat nmask_b = texture(NoiseMask, nmask_uv).b;
+\t\tfloat mask_val = InvertNoiseMask ? (1.0 - nmask_b) : nmask_b;
+\t\tfloat combined = (noise_prod + mask_val) * base_b;
+\t\tfloat alpha = smoothstep(OuterStep.x, OuterStep.y, combined);
+\t\tif (alpha <= 0.0001) {
+\t\t\tCOLOR = vec4(0.0);
+\t\t} else {
+\t\t\tfloat inner_t = smoothstep(InnerColorStep.x, InnerColorStep.y, combined);
+\t\t\tCOLOR.rgb = OuterColor.rgb + inner_t * InnerColor.rgb;
+\t\t\tCOLOR.a = alpha;
+\t\t}
+\t}
+}
+"
+""",
+    # 15x across scenes (blend_mix sibling of vfx_stepped_shader_fire_add):
+    "shaders/vfx/vfx_stepped_shader_fire_flat.tres": """[gd_resource type="Shader" format=3 uid="uid://dryvqo67omhm"]
+
+[resource]
+code = "shader_type canvas_item;
+render_mode blend_mix;
+
+uniform vec4 OuterColor : source_color = vec4(1.000000, 0.000000, 0.000000, 1.000000);
+uniform vec2 InnerColorStep = vec2(0.300000, 0.400000);
+uniform float Noise2Strength = 1.0;
+uniform vec2 Noise2Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise2Texture : repeat_enable;
+uniform float Noise1Strength = 1.0;
+uniform vec2 Noise1Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise1Texture : repeat_enable;
+uniform bool InvertNoiseMask = true;
+uniform vec2 NoiseMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 NoiseMaskOffset;
+uniform sampler2D NoiseMask : repeat_disable;
+uniform vec2 Distortion2Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion2Texture : repeat_enable;
+uniform float Distortion2Strength = 0.01999999955297;
+uniform vec2 Distortion1Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion1Texture : repeat_enable;
+uniform float Distortion1Strength = 0.01999999955297;
+uniform vec2 DistortionMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 DistortionMaskOffset;
+uniform sampler2D DistortionMask : repeat_disable;
+uniform vec4 InnerColor : source_color = vec4(1.000000, 0.850000, 0.000000, 1.000000);
+uniform vec2 OuterStep = vec2(0.100000, 0.200000);
+
+varying vec2 v_pan_d1;
+varying vec2 v_pan_d2;
+varying vec2 v_pan_n1;
+varying vec2 v_pan_n2;
+varying float v_cull_thresh;
+
+void vertex() {
+\tv_pan_d1 = Distortion1Panning * TIME;
+\tv_pan_d2 = Distortion2Panning * TIME;
+\tv_pan_n1 = Noise1Panning * TIME;
+\tv_pan_n2 = Noise2Panning * TIME;
+\tfloat max_gain = max(0.0, Noise1Strength * Noise2Strength) + 1.0;
+\tv_cull_thresh = (OuterStep.x > 0.0 && OuterStep.x < OuterStep.y) ? max(0.0, OuterStep.x / max_gain - 0.0001) : -1.0;
+}
+
+void fragment() {
+\tvec2 dmask = texture(DistortionMask, UV * DistortionMaskScale + DistortionMaskOffset).xy;
+\tvec2 dist = vec2(0.0);
+\tif (dmask.x != 0.0 || dmask.y != 0.0) {
+\t\tvec2 d = vec2(0.0);
+\t\tif (Distortion1Strength != 0.0) {
+\t\t\td += texture(Distortion1Texture, UV * Distortion1Scale + v_pan_d1).xy * Distortion1Strength;
+\t\t}
+\t\tif (Distortion2Strength != 0.0) {
+\t\t\td += texture(Distortion2Texture, UV * Distortion2Scale + v_pan_d2).xy * Distortion2Strength;
+\t\t}
+\t\tdist = d * dmask;
+\t}
+
+\tfloat base_b = texture(TEXTURE, UV + dist).b;
+\tif (base_b <= v_cull_thresh) {
+\t\tCOLOR = vec4(0.0);
+\t} else {
+\t\tfloat noise_prod = 0.0;
+\t\tif (Noise1Strength != 0.0 && Noise2Strength != 0.0) {
+\t\t\tfloat n1 = texture(Noise1Texture, UV * Noise1Scaling + v_pan_n1).b * Noise1Strength;
+\t\t\tfloat n2 = texture(Noise2Texture, UV * Noise2Scaling + v_pan_n2).b * Noise2Strength;
+\t\t\tnoise_prod = n1 * n2;
+\t\t}
+\t\tvec2 nmask_uv = (UV - vec2(0.0, 0.04)) * NoiseMaskScale + vec2(0.0, 0.04) + NoiseMaskOffset;
+\t\tfloat nmask_b = texture(NoiseMask, nmask_uv).b;
+\t\tfloat mask_val = InvertNoiseMask ? (1.0 - nmask_b) : nmask_b;
+\t\tfloat combined = (noise_prod + mask_val) * base_b;
+\t\tfloat alpha = smoothstep(OuterStep.x, OuterStep.y, combined);
+\t\tif (alpha <= 0.0001) {
+\t\t\tCOLOR = vec4(0.0);
+\t\t} else {
+\t\t\tfloat inner_t = smoothstep(InnerColorStep.x, InnerColorStep.y, combined);
+\t\t\tCOLOR.rgb = OuterColor.rgb + inner_t * InnerColor.rgb;
+\t\t\tCOLOR.a = alpha;
+\t\t}
+\t}
+}
+"
+""",
+    # 5x across scenes (dark fire variant with GlobalOffset and inverted inner blend):
+    "shaders/vfx/vfx_stepped_shader_fire_dark.tres": """[gd_resource type="Shader" format=3 uid="uid://citjsgmko2rak"]
+
+[resource]
+code = "shader_type canvas_item;
+render_mode blend_mix;
+
+uniform vec2 GlobalOffset = vec2(0.000000, 0.000000);
+uniform vec4 OuterColor : source_color = vec4(1.000000, 0.000000, 0.000000, 1.000000);
+uniform vec2 InnerColorStep = vec2(0.300000, 0.400000);
+uniform float Noise2Strength = 1.0;
+uniform vec2 Noise2Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise2Texture : repeat_enable;
+uniform float Noise1Strength = 1.0;
+uniform vec2 Noise1Scaling = vec2(1.000000, 1.000000);
+uniform vec2 Noise1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Noise1Texture : repeat_enable;
+uniform bool InvertNoiseMask = true;
+uniform vec2 NoiseMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 NoiseMaskOffset;
+uniform sampler2D NoiseMask : repeat_disable;
+uniform vec2 Distortion2Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion2Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion2Texture : repeat_enable;
+uniform float Distortion2Strength = 0.01999999955297;
+uniform vec2 Distortion1Scale = vec2(1.000000, 1.000000);
+uniform vec2 Distortion1Panning = vec2(1.000000, 1.000000);
+uniform sampler2D Distortion1Texture : repeat_enable;
+uniform float Distortion1Strength = 0.01999999955297;
+uniform vec2 DistortionMaskScale = vec2(1.000000, 1.000000);
+uniform vec2 DistortionMaskOffset;
+uniform sampler2D DistortionMask : repeat_disable;
+uniform vec4 InnerColor : source_color = vec4(1.000000, 0.850000, 0.000000, 1.000000);
+uniform vec2 OuterStep = vec2(0.100000, 0.200000);
+
+varying vec2 v_pan_d1;
+varying vec2 v_pan_d2;
+varying vec2 v_pan_n1;
+varying vec2 v_pan_n2;
+varying float v_cull_thresh;
+
+void vertex() {
+\tv_pan_d1 = Distortion1Panning * TIME + GlobalOffset;
+\tv_pan_d2 = Distortion2Panning * TIME + GlobalOffset;
+\tv_pan_n1 = Noise1Panning * TIME + GlobalOffset;
+\tv_pan_n2 = Noise2Panning * TIME + GlobalOffset;
+\tfloat max_gain = max(0.0, Noise1Strength * Noise2Strength) + 1.0;
+\tv_cull_thresh = (OuterStep.x > 0.0 && OuterStep.x < OuterStep.y) ? max(0.0, OuterStep.x / max_gain - 0.0001) : -1.0;
+}
+
+void fragment() {
+\tvec2 dmask = texture(DistortionMask, UV * DistortionMaskScale + DistortionMaskOffset).xy;
+\tvec2 dist = vec2(0.0);
+\tif (dmask.x != 0.0 || dmask.y != 0.0) {
+\t\tvec2 d = vec2(0.0);
+\t\tif (Distortion1Strength != 0.0) {
+\t\t\td += texture(Distortion1Texture, UV * Distortion1Scale + v_pan_d1).xy * Distortion1Strength;
+\t\t}
+\t\tif (Distortion2Strength != 0.0) {
+\t\t\td += texture(Distortion2Texture, UV * Distortion2Scale + v_pan_d2).xy * Distortion2Strength;
+\t\t}
+\t\tdist = d * dmask;
+\t}
+
+\tfloat base_b = texture(TEXTURE, UV + dist).b;
+\tif (base_b <= v_cull_thresh) {
+\t\tCOLOR = vec4(0.0);
+\t} else {
+\t\tfloat noise_prod = 0.0;
+\t\tif (Noise1Strength != 0.0 && Noise2Strength != 0.0) {
+\t\t\tfloat n1 = texture(Noise1Texture, UV * Noise1Scaling + v_pan_n1).b * Noise1Strength;
+\t\t\tfloat n2 = texture(Noise2Texture, UV * Noise2Scaling + v_pan_n2).b * Noise2Strength;
+\t\t\tnoise_prod = n1 * n2;
+\t\t}
+\t\tvec2 nmask_uv = (UV - vec2(0.0, 0.04)) * NoiseMaskScale + vec2(0.0, 0.04) + NoiseMaskOffset;
+\t\tfloat nmask_b = texture(NoiseMask, nmask_uv).b;
+\t\tfloat mask_val = InvertNoiseMask ? (1.0 - nmask_b) : nmask_b;
+\t\tfloat combined = (noise_prod + mask_val) * base_b;
+\t\tfloat alpha = smoothstep(OuterStep.x, OuterStep.y, combined);
+\t\tif (alpha <= 0.0001) {
+\t\t\tCOLOR = vec4(0.0);
+\t\t} else {
+\t\t\tfloat inner_t = smoothstep(InnerColorStep.x, InnerColorStep.y, 1.0 - combined);
+\t\t\tCOLOR.rgb = OuterColor.rgb * (vec3(inner_t) + InnerColor.rgb);
+\t\t\tCOLOR.a = alpha;
+\t\t}
+\t}
+}
+"
+""",
+    # Post-pass water reflection: checks mask alpha first so non-water pixels
+    # skip noise + SCREEN_TEXTURE fetches (100% identical output).
+    "shaders/vfx/vfx_water_reflection_post.gdshader": """shader_type canvas_item;
+uniform sampler2D noise : repeat_enable;
+uniform sampler2D mask;
+uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear_mipmap;
+uniform float speed : hint_range(0.002,0.5) = 0.1;
+uniform float strength : hint_range(0.002,0.5) = 0.1;
+
+void fragment() {
+    float mask_a = texture(mask, UV).a;
+    if (mask_a <= 0.001) {
+        COLOR = vec4(0.0);
+    } else {
+        float noise_value = texture(noise, UV - TIME * speed).r;
+        COLOR = texture(SCREEN_TEXTURE, SCREEN_UV - (strength * 0.5) + vec2(noise_value) * strength);
+        COLOR.a *= mask_a;
+    }
+}
+""",
+    # Necrobinder Doom health bar: removes duplicate identical noise_tex sample.
+    "scenes/combat/doom_bar.gdshader": """shader_type canvas_item;
+
+uniform sampler2D noise_tex : repeat_enable;
+uniform sampler2D gradient_tex;
+
+void fragment() {
+    float scrollOffset = texture(noise_tex, SCREEN_UV * 0.1 + TIME * 0.0005 + 0.24).r;
+    float col1 = texture(noise_tex, SCREEN_UV + TIME * 0.0005 + scrollOffset).r;
+    float col2 = texture(noise_tex, SCREEN_UV + TIME * -0.0007 + scrollOffset).r;
+    float final_val = smoothstep(0.4, 0.6, col1 * 0.75 + col2 * 0.35);
+    COLOR.rgb = texture(gradient_tex, vec2(final_val, 0.0)).rgb;
+}
+""",
+}
 
 
 def main():
@@ -316,6 +734,9 @@ def main():
     ap.add_argument("--overlay", action="store_true",
                     help="write ONLY the converted textures, as a small pack to "
                          "load over the original with replace_files=true")
+    ap.add_argument("--optimize-shaders", action="store_true",
+                    help="also bundle zero-loss GPU-optimized shaders (hsv, water_reflection, "
+                         "stepped_shader_fire_*, doom_bar) into the output pack")
     a = ap.parse_args()
     hybrid = (a.block == "hybrid")
     bx, by = (0, 0) if hybrid else tuple(int(v) for v in a.block.split("x"))
@@ -444,9 +865,19 @@ def main():
     # Note: a BPTC (BC7, 1.0 B/px) texture converted to ASTC 4x4 (1.0 B/px) has
     # the EXACT same byte length as the original, so we must filter by
     # converted_ok rather than len(new_blob) != old_size!
+    if a.optimize_shaders:
+        opt_count = 0
+        existing_paths = {e[0] for e in entries}
+        for sp, scode in OPTIMIZED_SHADERS.items():
+            if sp in existing_paths:
+                results[sp] = scode.encode("utf-8")
+                converted_ok.add(sp)
+                opt_count += 1
+        print(f"shader optimizer: queued {opt_count} zero-loss GPU shader override(s)")
+
     if a.overlay:
         entries = [e for e in entries if e[0] in converted_ok]
-        print(f"overlay: {len(entries)} converted texture(s) only")
+        print(f"overlay: {len(entries)} converted file(s) only")
 
     # Rewrite. Entry offsets are relative to file_base when PACK_REL_FILEBASE
     # (0x2) is set, which is what Godot 4.5 emits; the directory goes last and

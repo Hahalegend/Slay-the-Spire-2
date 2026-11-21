@@ -8,9 +8,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Reflection;
-using System.Threading;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
@@ -224,6 +222,7 @@ public static class PreloadPatches
 
         bool isRoomOrAct = !name.StartsWith("characters=", StringComparison.Ordinal);
         bool isCombatRoom = name.Contains("Combat Room", StringComparison.OrdinalIgnoreCase);
+        string activeCharacterSlug = isRoomOrAct ? "" : name.Substring("characters=".Length).Trim();
 
         var kept = new List<string>();
         var keptSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -237,7 +236,7 @@ public static class PreloadPatches
             if (string.IsNullOrEmpty(path))
                 continue;
 
-            if (ShouldPreload(path, isRoomOrAct, isCombatRoom, out bool isCoreVfx))
+            if (ShouldPreload(path, isRoomOrAct, isCombatRoom, activeCharacterSlug, out bool isCoreVfx))
             {
                 if (keptSet.Add(path))
                 {
@@ -273,7 +272,7 @@ public static class PreloadPatches
         __arg0 = kept;
     }
 
-    private static bool ShouldPreload(string path, bool isRoomOrAct, bool isCombatRoom, out bool isCoreVfx)
+    private static bool ShouldPreload(string path, bool isRoomOrAct, bool isCombatRoom, string activeCharacterSlug, out bool isCoreVfx)
     {
         isCoreVfx = false;
 
@@ -292,7 +291,7 @@ public static class PreloadPatches
                 isCoreVfx = true;
                 return true;
             }
-            if (path.EndsWith(".tscn", StringComparison.OrdinalIgnoreCase) && IsCoreCombatVfx(path))
+            if (path.EndsWith(".tscn", StringComparison.OrdinalIgnoreCase) && IsCoreCombatVfx(path, activeCharacterSlug))
             {
                 isCoreVfx = true;
                 return true;
@@ -365,17 +364,28 @@ public static class PreloadPatches
         return false;
     }
 
-    private static bool IsCoreCombatVfx(string path)
+    private static bool IsCoreCombatVfx(string path, string activeCharacterSlug)
     {
         // Skip internal sub-component scenes that Godot automatically loads as
-        // dependencies of their parent VFX .tscn, avoiding 30+ redundant queue rounds.
+        // dependencies of their parent VFX .tscn, avoiding redundant queue rounds.
         if (path.Contains("/components/", StringComparison.OrdinalIgnoreCase) ||
             path.EndsWith("_flipbook.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.EndsWith("_2d_front.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.EndsWith("_3d_back.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.EndsWith("_viewport_bg.tscn", StringComparison.OrdinalIgnoreCase) ||
             path.Contains("/scream/vfx_scream_", StringComparison.OrdinalIgnoreCase) ||
-            path.Contains("/starry_impact/vfx_starry_impact_", StringComparison.OrdinalIgnoreCase))
+            path.Contains("/starry_impact/vfx_starry_impact_", StringComparison.OrdinalIgnoreCase) ||
+            path.Contains("/big_slash/vfx_big_slash_impact_", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("vfx_coin_explosion_jumbo.tscn", StringComparison.OrdinalIgnoreCase) ||
+            path.EndsWith("vfx_coin_explosion_small.tscn", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // During single-character Embark, only preload the active character's card_trail_*.tscn.
+        if (!string.IsNullOrEmpty(activeCharacterSlug) &&
+            path.Contains("card_trail_", StringComparison.OrdinalIgnoreCase) &&
+            !path.Contains("card_trail_" + activeCharacterSlug, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -480,10 +490,12 @@ public static class PreloadPatches
         return false;
     }
 
-    // Immediately finalize completed assets and chain fast serialized loads
-    // within a 3.5 ms per-frame slice so 60+ small icons/materials/VFX scenes
-    // don't pay a 2-frame (33.3 ms) VSync polling floor per asset while keeping
-    // strictly 1 load in flight at any instant.
+    // Immediately finalize completed assets and kick the next serialized load
+    // without waiting an extra VSync frame. IMPORTANT: never busy-spin on
+    // LoadThreadedGetStatus() + Thread.Yield() while InProgress -- that pounds
+    // Godot's global ResourceLoader::thread_load_mutex and starves the worker
+    // thread on Switch's 3 cores (measured +5.9s regression in ef662919!).
+    // Only drain additional assets if they are ALREADY Loaded (cached hits).
     [SwitchPostfix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "CheckLoadingStatus")]
     public static void KickNextSerializedLoad(object __instance)
     {
@@ -502,13 +514,9 @@ public static class PreloadPatches
         if (loading is null || finalizing is null || loading.Count == 0)
             return;
 
-        // 3. Within a 3.5 ms frame budget, drain fast assets that finish on the
-        //    worker thread in sub-millisecond time without waiting for the next
-        //    60 Hz VSync frame.
-        long budgetTicks = Stopwatch.Frequency * 35 / 10_000; // 3.5 ms
-        long deadline = Stopwatch.GetTimestamp() + budgetTicks;
-
-        while (loading.Count == 1 && Stopwatch.GetTimestamp() < deadline)
+        // 3. Drain already-loaded cache hits immediately (zero spinning on InProgress).
+        int drained = 0;
+        while (loading.Count == 1 && drained < 16)
         {
             string currentPath = loading.Peek();
             var status = Godot.ResourceLoader.LoadThreadedGetStatus(currentPath);
@@ -518,14 +526,10 @@ public static class PreloadPatches
                 finalizing.Enqueue(currentPath);
                 DrainFinalizingImmediate(__instance, finalizing);
                 SerializeThreadedLoading(__instance);
-            }
-            else if (status == Godot.ResourceLoader.ThreadLoadStatus.InProgress)
-            {
-                Thread.Yield();
+                drained++;
             }
             else
             {
-                // Failed / InvalidResource: let stock CheckLoadingStatus fallback handle it next frame.
                 break;
             }
         }
