@@ -28,35 +28,13 @@ public static class PerformancePatches
 {
     private static PropertyInfo? _warnOnGrowProp;
     private static bool _warnOnGrowResolved;
-    private static long _lastTransitionGcTicks;
-
-    // ------------------------------------------------------------------
-    // 0b. Strategic between-room GC pacing (Slay the Spire 1 / console pattern):
-    //     During active combat we keep SustainedLowLatency enabled so .NET GC
-    //     avoids blocking Gen2 pauses; during black-screen room fades we run
-    //     a lightweight non-blocking Gen1 sweep at most once per 45 seconds
-    //     when managed memory exceeds 48 MB.
-    // ------------------------------------------------------------------
-    [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.NTransition", "RoomFadeOut", Optional = true)]
-    public static void GentleBetweenRoomGc()
-    {
-        long now = Environment.TickCount64;
-        if (_lastTransitionGcTicks != 0 && (now - _lastTransitionGcTicks) < 45_000)
-            return;
-
-        if (GC.GetTotalMemory(forceFullCollection: false) < 48L * 1024 * 1024)
-            return;
-
-        _lastTransitionGcTicks = now;
-        try
-        {
-            GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
-        }
-        catch { }
-    }
 
     // ------------------------------------------------------------------
     // 0. Silence PacketWriter 6x buffer-grow warning log spam after combats.
+    //    (Note: PreloadManager.LoadRoomAssets / LoadActAssets / LoadRunAssets
+    //    already execute GC.Collect() at the end of every room/act load while
+    //    faded out, while SustainedLowLatency below prevents blocking Gen2
+    //    collections during active combat.)
     // ------------------------------------------------------------------
     [SwitchPostfix("MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter", ".ctor", Optional = true)]
     public static void SilencePacketWriterGrowWarnings(object __instance)

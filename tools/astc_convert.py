@@ -120,9 +120,22 @@ def decode_to_rgba(blob, data_format, fmt, w, h):
     return None                          # already ASTC/ETC, or something unknown
 
 
+_WORKER_CTX = {}
+
+
+def _get_astc_ctx(bx, by, quality):
+    key = (bx, by, quality)
+    ctx = _WORKER_CTX.get(key)
+    if ctx is None:
+        from astc_encoder import ASTCConfig, ASTCContext, ASTCProfile
+        ctx = ASTCContext(ASTCConfig(ASTCProfile.LDR_SRGB, bx, by, 1, float(quality)))
+        _WORKER_CTX[key] = ctx
+    return ctx
+
+
 def convert_one(args):
-    """Worker: (name, blob, bx, by) -> (name, new_blob, old_vram, new_size, note)"""
-    name, blob, bx, by = args
+    """Worker: (name, blob, bx, by, quality) -> (name, new_blob, old_vram, new_size, note)"""
+    name, blob, bx, by, quality = args
     if len(blob) < DATA_OFF or blob[:4] != b"GST2":
         return name, blob, 0, len(blob), "not a texture"
 
@@ -155,13 +168,17 @@ def convert_one(args):
     if len(rgba) != need:
         return name, blob, 0, len(blob), f"decode size {len(rgba)} != {need}"
 
-    from astc_encoder import (ASTCConfig, ASTCContext, ASTCImage, ASTCProfile,
-                              ASTCSwizzle, ASTCType)
-    ctx = ASTCContext(ASTCConfig(ASTCProfile.LDR_SRGB, bx, by, 1, 60.0))
+    from astc_encoder import ASTCImage, ASTCSwizzle, ASTCType
+    ctx = _get_astc_ctx(bx, by, quality)
     comp = ctx.compress(ASTCImage(ASTCType.U8, w, h, 1, rgba),
                         ASTCSwizzle.from_str("RGBA"))
 
-    new_fmt = F_ASTC_4x4 if (bx, by) == (4, 4) else F_ASTC_8x8
+    if (bx, by) == (4, 4):
+        new_fmt = F_ASTC_4x4
+    elif (bx, by) == (8, 8):
+        new_fmt = F_ASTC_8x8
+    else:
+        return name, blob, 0, len(blob), f"unsupported Godot Image::Format for ASTC {bx}x{by}"
     # Preserve the high bits: they carry DETECT_3D / DETECT_NORMAL / mipmap
     # flags that the engine reads back, and dropping them changes behaviour
     # unrelated to compression.
@@ -169,7 +186,7 @@ def convert_one(args):
     struct.pack_into("<I", out, IMG_OFF, D_IMAGE)     # now raw, not PNG/WebP
     struct.pack_into("<I", out, IMG_OFF + 12, (raw_fmt & ~FORMAT_MASK) | new_fmt)
     out += comp
-    return name, bytes(out), need, len(out), "ok"
+    return name, bytes(out), need, len(out), f"ok ({bx}x{by})"
 
 
 def read_pck(path):
@@ -234,12 +251,60 @@ def preflight():
         sys.exit(1)
 
 
+def _build_import_map(f, file_base, entries):
+    """Map .godot/imported/*.ctex -> original res:// source path via .import files."""
+    imp = {}
+    for p, off, sz, _, _ in entries:
+        if p.endswith(".import") and sz < 8192:
+            f.seek(file_base + off)
+            txt = f.read(sz).decode("utf-8", "ignore")
+            src = p[:-7].lower()
+            for line in txt.splitlines():
+                if ".ctex" in line and ".godot/imported/" in line:
+                    i1 = line.find(".godot/imported/")
+                    i2 = line.find(".ctex", i1)
+                    if i2 > i1:
+                        imp[line[i1:i2 + 5]] = src
+    return imp
+
+
+def _pick_hybrid_block(p, blob, imp_map):
+    """Select ASTC 4x4 (near-lossless PC quality) for gameplay art/UI/atlases/
+    characters/monsters/VFX and ASTC 8x8 for giant backgrounds & individual
+    high-res card_portraits (cards in combat use card_atlas_0/1 which IS 4x4)."""
+    if len(blob) < DATA_OFF or blob[:4] != b"GST2":
+        return 8, 8
+    w, h = struct.unpack("<HH", blob[IMG_OFF + 4:IMG_OFF + 8])
+    src = imp_map.get(p, p).lower()
+    if src.startswith("images/atlases/"):
+        return 4, 4
+    if src.startswith((
+        "images/packed/card_portraits/",
+        "images/rooms/",
+        "animations/backgrounds/",
+        "animations/character_select/",
+        "scenes/backgrounds/",
+        "images/ui/transitions/",
+    )):
+        return 8, 8
+    if max(w, h) < 2048:
+        return 4, 4
+    return 8, 8
+
+
 def main():
     preflight()
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
     ap.add_argument("dst")
-    ap.add_argument("--block", default="8x8", choices=["4x4", "6x6", "8x8"])
+    ap.add_argument("--block", default="8x8", choices=["4x4", "8x8", "hybrid"],
+                    help="ASTC block size: 4x4 (max quality), 8x8 (smallest), or "
+                         "hybrid (4x4 for all atlases/UI/cards/characters/monsters/VFX, "
+                         "8x8 for giant backgrounds & individual card_portraits)")
+    ap.add_argument("--quality", type=float, default=60.0,
+                    help="astcenc quality preset (0-100: 10=fast, 60=medium, 98=thorough)")
+    ap.add_argument("--quality-8x8", type=float, default=None,
+                    help="Optional separate quality for 8x8 blocks in hybrid mode")
     ap.add_argument("--jobs", type=int, default=max(1, os.cpu_count() or 1))
     ap.add_argument("--inspect", metavar="SUBSTRING",
                     help="dump header details for textures whose path contains "
@@ -252,12 +317,19 @@ def main():
                     help="write ONLY the converted textures, as a small pack to "
                          "load over the original with replace_files=true")
     a = ap.parse_args()
-    bx, by = (int(v) for v in a.block.split("x"))
+    hybrid = (a.block == "hybrid")
+    bx, by = (0, 0) if hybrid else tuple(int(v) for v in a.block.split("x"))
+    q4 = a.quality
+    q8 = a.quality_8x8 if a.quality_8x8 is not None else a.quality
 
     f, hdr, entries = read_pck(a.src)
     ver, maj, mnr, patch, flags, file_base = hdr
     print(f"pck v{ver} godot {maj}.{mnr}.{patch}, {len(entries)} files, "
-          f"target ASTC {a.block}")
+          f"target ASTC {a.block} (quality={q4:.0f}/{q8:.0f})")
+
+    imp_map = _build_import_map(f, file_base, entries) if hybrid else {}
+    if hybrid:
+        print(f"mapped {len(imp_map)} .import source paths for hybrid ASTC selection")
 
     tex = [i for i, e in enumerate(entries) if e[0].endswith(".ctex")]
     print(f"{len(tex)} textures to consider, {a.jobs} worker(s)")
@@ -326,9 +398,16 @@ def main():
     def load(i):
         p, off, sz, _, _ = entries[i]
         f.seek(file_base + off)
-        return (p, f.read(sz), bx, by)
+        blob = f.read(sz)
+        if hybrid:
+            tbx, tby = _pick_hybrid_block(p, blob, imp_map)
+        else:
+            tbx, tby = bx, by
+        tq = q4 if (tbx, tby) == (4, 4) else q8
+        return (p, blob, tbx, tby, tq)
 
     results = {}
+    converted_ok = set()
     stats = {"ok": 0, "vram_before": 0, "size_after": 0}
     notes = {}
     try:
@@ -337,12 +416,13 @@ def main():
                 pool.imap_unordered(convert_one, (load(i) for i in tex), chunksize=8)):
             results[name] = blob
             notes[note] = notes.get(note, 0) + 1
-            if note == "ok":
+            if note.startswith("ok"):
+                converted_ok.add(name)
                 stats["ok"] += 1
                 stats["vram_before"] += vram
                 stats["size_after"] += size
             if (n + 1) % 250 == 0:
-                print(f"  {n+1}/{len(tex)}")
+                print(f"  {n+1}/{len(tex)}", flush=True)
     except ImportError as e:
         sys.exit(f"\nworker could not import {e}. preflight passed but the "
                  f"worker processes see a different environment -- check that "
@@ -361,16 +441,11 @@ def main():
     # overlay replaces the textures inside a 1.77 GB pack that is never
     # rewritten or even moved.
     #
-    # That matters for doing this on the console: writing 1.77 GB back to SD is
-    # slow and needs the space free, while the overlay is a third of the size
-    # and the original stays untouched, so a failed or interrupted conversion
-    # cannot leave an unbootable install.
+    # Note: a BPTC (BC7, 1.0 B/px) texture converted to ASTC 4x4 (1.0 B/px) has
+    # the EXACT same byte length as the original, so we must filter by
+    # converted_ok rather than len(new_blob) != old_size!
     if a.overlay:
-        # Only entries whose bytes actually changed. Including an unconverted
-        # texture would shadow the original with an identical copy, which costs
-        # space and proves nothing.
-        entries = [e for e in entries
-                   if e[0] in results and len(results[e[0]]) != e[2]]
+        entries = [e for e in entries if e[0] in converted_ok]
         print(f"overlay: {len(entries)} converted texture(s) only")
 
     # Rewrite. Entry offsets are relative to file_base when PACK_REL_FILEBASE

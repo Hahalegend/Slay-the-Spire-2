@@ -121,12 +121,7 @@ public static class PlatformPatches
                   ArgumentTypeNames = new[] { "System.Exception" }, Optional = true)]
     public static bool SkipSentryCapture1(Exception __arg0)
     {
-        // Already bound to this signature, with the exception right there. It
-        // was being discarded. The game calls CaptureException for its own
-        // error reporting -- run 14 reached it from SaveManager.SaveSettings --
-        // so this is a free window onto whatever the game considers wrong,
-        // without patching anything new.
-        SwitchLog.Error("game reported: " + (__arg0?.ToString() ?? "(null)"));
+        LogCapturedException(__arg0);
         return false;   // still skipped; Sentry itself cannot work here
     }
 
@@ -135,8 +130,26 @@ public static class PlatformPatches
                   Optional = true)]
     public static bool SkipSentryCapture2(Exception __arg0)
     {
-        SwitchLog.Error("game reported: " + (__arg0?.ToString() ?? "(null)"));
+        LogCapturedException(__arg0);
         return false;
+    }
+
+    private static void LogCapturedException(Exception? ex)
+    {
+        if (ex is null)
+            return;
+
+        // Avoid expensive 12-frame GD.PushError C# stack-walk + multi-line microSD
+        // write mid-combat when a PlayCardAction is benignly canceled on combat end
+        // or target release.
+        string msg = ex.Message ?? "";
+        if (msg.Contains("finished execution, but was in state Canceled", StringComparison.Ordinal))
+        {
+            SwitchLog.Info("game reported canceled action: " + msg);
+            return;
+        }
+
+        SwitchLog.Error("game reported: " + ex.ToString());
     }
 
     [SwitchPrefix("MegaCrit.Sts2.Core.Debug.SentryService", "CaptureMessage", Optional = true)]

@@ -20,11 +20,12 @@ public static class PreloadPatches
     private static FieldInfo? _toLoadField;
     private static FieldInfo? _cacheField;
     private static bool _sessionFieldsResolved;
+    private static readonly HashSet<string> RoomAdditionalAssets = new(StringComparer.OrdinalIgnoreCase);
 
     // Core universal VFX fired in almost every combat, reward, or map transition.
-    // Preloading ONLY these (~28 scenes, loaded in parallel) avoids mid-combat
-    // main-thread load/shader stutters without spending 90+ seconds preloading
-    // all ~313 rare card/event/boss VFX scenes upfront.
+    // Preloading ONLY these (~45 scenes, loaded in parallel/serialized queue at
+    // Embark) avoids mid-combat main-thread load/shader stutters without spending
+    // 90+ seconds preloading all ~317 rare event/boss VFX scenes upfront.
     private static readonly string[] CoreCombatVfxNames =
     {
         "vfx_attack_slash",
@@ -49,6 +50,7 @@ public static class PreloadPatches
         "map_node_select_vfx",
         "relic_inventory_flash_vfx",
         "relic_flash_vfx",
+        "relic_rare_glow_vfx",
         "vfx_potion_flash",
         "uncommon_glow_vfx",
         "vfx_low_hp_border",
@@ -60,7 +62,27 @@ public static class PreloadPatches
         "power_flash_vfx",
         "rare_glow_vfx",
         "vfx_card_transform",
+        "vfx_card_upgrade",
+        "vfx_card_enchant",
         "vfx_attack_blunt",
+        "vfx_heavy_blunt",
+        "vfx_big_slash",
+        "vfx_attack_lightning",
+        "vfx_poison_impact",
+        "vfx_dagger_throw",
+        "vfx_shiv_throw",
+        "vfx_fire_burst",
+        "vfx_bite",
+        "vfx_scratch",
+        "vfx_bloody_impact",
+        "vfx_doom",
+        "vfx_coin_explosion_",
+        "card_sparkles_vfx",
+        "ui_flash_vfx",
+        "vfx_smoke_puff",
+        "vfx_scream",
+        "vfx_power_up",
+        "vfx_ghostly_power_up",
         "vfx_slime_impact",
         "vfx_card_smith",
         "spike_splash_vfx",
@@ -155,6 +177,24 @@ public static class PreloadPatches
     // ------------------------------------------------------------------
     // 1. Tight allowlist preload filter in PreloadManager.LoadAssets
     // ------------------------------------------------------------------
+    // PreloadManager.LoadRoomAssets(roomName, additionalAssets) merges
+    // [CommonAssets, RunSet, Act, additionalAssets] before calling LoadAssets.
+    // Capturing additionalAssets here lets 'Combat Room' distinguish the
+    // encounter's own 2-7 monster VFX from the 60+ deferred global Common/Run
+    // VFX, cutting the first Combat Room load from 32.8s down to ~0.6s!
+    [SwitchPrefix("MegaCrit.Sts2.Core.Assets.PreloadManager", "LoadRoomAssets", Optional = true)]
+    public static void CaptureRoomAdditionalAssets(string __arg0, IEnumerable<string>? __arg1)
+    {
+        RoomAdditionalAssets.Clear();
+        if (__arg1 is null)
+            return;
+        foreach (var p in __arg1)
+        {
+            if (!string.IsNullOrEmpty(p))
+                RoomAdditionalAssets.Add(p);
+        }
+    }
+
     [SwitchPrefix("MegaCrit.Sts2.Core.Assets.PreloadManager", "LoadAssets")]
     public static void FilterPreloadAssets(ref IEnumerable<string> __arg0, string __arg1)
     {
@@ -233,15 +273,16 @@ public static class PreloadPatches
         isCoreVfx = false;
 
         // VFX scenes/materials/shaders:
-        // - During 'Combat Room' preloads ONLY, keep ALL room-specific VFX
-        //   requested for that fight's monsters (typically 2-6 files, ~0.5s) so
-        //   enemy attacks never stall 350-450ms loading synchronously mid-turn.
-        // - During 'Act=*' (61+ act VFX -> 36s!) and Embark ('characters=*'),
-        //   keep ONLY the ~39 universal core combat VFX so Act/Embark loads
-        //   stay super fast (~0.5s Act, ~10s Embark).
+        // - During 'Combat Room' preloads, keep ONLY the encounter's own
+        //   room-specific monster VFX (recorded in RoomAdditionalAssets from
+        //   LoadRoomAssets) plus universal CoreCombatVfxNames. Previously,
+        //   allowing all /vfx/ during 'Combat Room' let 61 deferred Common+Run
+        //   VFX flood into the first combat room (32.8s stall!).
+        // - During 'Act=*' and Embark ('characters=*'), keep ONLY universal
+        //   CoreCombatVfxNames so Act (~0.5s) and Embark (~10s) stay fast.
         if (path.Contains("/vfx/", StringComparison.OrdinalIgnoreCase))
         {
-            if (isCombatRoom)
+            if (isCombatRoom && RoomAdditionalAssets.Contains(path))
             {
                 isCoreVfx = true;
                 return true;
