@@ -18,6 +18,7 @@
 
 using System;
 using System.Reflection;
+using System.Runtime;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
@@ -27,6 +28,32 @@ public static class PerformancePatches
 {
     private static PropertyInfo? _warnOnGrowProp;
     private static bool _warnOnGrowResolved;
+    private static long _lastTransitionGcTicks;
+
+    // ------------------------------------------------------------------
+    // 0b. Strategic between-room GC pacing (Slay the Spire 1 / console pattern):
+    //     During active combat we keep SustainedLowLatency enabled so .NET GC
+    //     avoids blocking Gen2 pauses; during black-screen room fades we run
+    //     a lightweight non-blocking Gen1 sweep at most once per 45 seconds
+    //     when managed memory exceeds 48 MB.
+    // ------------------------------------------------------------------
+    [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.NTransition", "RoomFadeOut", Optional = true)]
+    public static void GentleBetweenRoomGc()
+    {
+        long now = Environment.TickCount64;
+        if (_lastTransitionGcTicks != 0 && (now - _lastTransitionGcTicks) < 45_000)
+            return;
+
+        if (GC.GetTotalMemory(forceFullCollection: false) < 48L * 1024 * 1024)
+            return;
+
+        _lastTransitionGcTicks = now;
+        try
+        {
+            GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
+        }
+        catch { }
+    }
 
     // ------------------------------------------------------------------
     // 0. Silence PacketWriter 6x buffer-grow warning log spam after combats.
@@ -131,7 +158,13 @@ public static class PerformancePatches
                 }
             }
 
-            SwitchLog.Info($"PerformancePatches ({reason}): MaxFps={targetFps}, PhysicsHz=30, SingleSync=NWindow, AA=Off");
+            try
+            {
+                GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+            }
+            catch { }
+
+            SwitchLog.Info($"PerformancePatches ({reason}): MaxFps={targetFps}, PhysicsHz=30, SingleSync=NWindow, AA=Off, GC=SustainedLowLatency");
         }
         catch { }
 #endif
