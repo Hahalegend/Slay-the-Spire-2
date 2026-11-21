@@ -112,13 +112,6 @@ public static class PreloadPatches
         "res://images/powers/constrict_power.png",
         "res://images/powers/hang_power.png",
         "res://scenes/ui/generic_popup.tscn",
-        "res://scenes/vfx/vfx_spore_impact.tscn",
-        "res://scenes/vfx/vfx_scratch.tscn",
-        "res://scenes/vfx/vfx_item_throw.tscn",
-        "res://scenes/vfx/vfx_fire_smoke_puff.tscn",
-        "res://scenes/vfx/vfx_card_upgrade.tscn",
-        "res://scenes/vfx/fires/vfx_ground_fire.tscn",
-        "res://scenes/vfx/vfx_gain_epoch.tscn",
     };
 
     // ------------------------------------------------------------------

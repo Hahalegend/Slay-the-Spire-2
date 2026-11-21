@@ -28,69 +28,6 @@ public static class PerformancePatches
     private static PropertyInfo? _warnOnGrowProp;
     private static bool _warnOnGrowResolved;
 
-#if HAVE_GODOTSHARP
-    private static FieldInfo? _trailActiveField;
-    private static FieldInfo? _trailParentField;
-    private static FieldInfo? _trailQueueField;
-    private static FieldInfo? _trailMaxSegField;
-    private static bool _trailFieldsResolved;
-
-    // ------------------------------------------------------------------
-    // 0b. Zero-LINQ, zero-delegate NTrail2D._Process replacement.
-    //     Stock NTrail2D._Process allocated a Func<Vector2,Vector2> +
-    //     LINQ Select enumerator + Vector2[] and called GetParent() per
-    //     segment every single frame while cards fly across the screen.
-    // ------------------------------------------------------------------
-    [SwitchPrefix("MegaCrit.Sts2.Core.Nodes.Vfx.Utilities.NTrail2D", "_Process", Optional = true)]
-    public static bool FastTrailProcess(object __instance)
-    {
-        if (__instance is not Godot.Line2D line)
-            return true;
-
-        if (!_trailFieldsResolved)
-        {
-            var t = __instance.GetType();
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-            _trailActiveField = t.GetField("_isActive", flags);
-            _trailParentField = t.GetField("_parent", flags);
-            _trailQueueField = t.GetField("_pointQueue", flags);
-            _trailMaxSegField = t.GetField("_maxSegments", flags);
-            _trailFieldsResolved = true;
-        }
-
-        if (_trailActiveField is null || _trailParentField is null ||
-            _trailQueueField is null || _trailMaxSegField is null)
-            return true;
-
-        if (_trailActiveField.GetValue(__instance) is not true)
-            return false;
-
-        if (_trailParentField.GetValue(__instance) is not Godot.Node2D parent ||
-            !Godot.GodotObject.IsInstanceValid(parent))
-            return false;
-
-        if (_trailQueueField.GetValue(__instance) is not System.Collections.Generic.List<Godot.Vector2> queue)
-            return false;
-
-        int maxSeg = (int)(_trailMaxSegField.GetValue(__instance) ?? 0);
-        queue.Insert(0, parent.GlobalPosition);
-        if (queue.Count >= maxSeg && queue.Count > 0)
-            queue.RemoveAt(queue.Count - 1);
-
-        var parentNode = line.GetParent() as Godot.Node2D;
-        if (parentNode is null || !Godot.GodotObject.IsInstanceValid(parentNode))
-            return false;
-
-        int count = queue.Count;
-        var pts = new Godot.Vector2[count];
-        for (int i = 0; i < count; i++)
-            pts[i] = parentNode.ToLocal(queue[i]);
-
-        line.Points = pts;
-        return false;
-    }
-#endif
-
     // ------------------------------------------------------------------
     // 0. Silence PacketWriter 6x buffer-grow warning log spam after combats.
     // ------------------------------------------------------------------

@@ -116,8 +116,10 @@ Ok "Replaced GodotSharp.dll from APK libassembly-store.so"
 # 4. Stamp patchset, build STS2Switch.dll, and weave patches
 Say "Weaving STS2Switch patches"
 python (Join-Path $Repo "tools\stamp_patchset.py") $Repo
+if ($LASTEXITCODE -ne 0) { throw "stamp_patchset.py failed with exit code $LASTEXITCODE" }
 
 dotnet build (Join-Path $Repo "patches\STS2Switch\STS2Switch.csproj") -c Release -p:GameAssemblyDir="$RawDir" --nologo
+if ($LASTEXITCODE -ne 0) { throw "STS2Switch.csproj build failed with exit code $LASTEXITCODE" }
 $PatchDll = (Get-ChildItem (Join-Path $Repo "patches\STS2Switch\bin\Release") -Recurse -Filter "STS2Switch.dll" | Select-Object -First 1).FullName
 if (-not $PatchDll) { throw "STS2Switch.dll was not produced" }
 
