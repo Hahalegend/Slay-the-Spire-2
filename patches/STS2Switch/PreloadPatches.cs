@@ -68,6 +68,43 @@ public static class PreloadPatches
         "bg_ground_spike_vfx",
     };
 
+    // Tiny (<4 KB) universal combat/UI assets observed missing mid-run on Switch
+    // that are not always listed in a character's RunSet. Injecting them once
+    // during Embark preload (and keeping them warm via KeepReusableAssetsWarm)
+    // eliminates synchronous SD-card stutters during combat and hover tips.
+    private static readonly string[] ExtraWarmRunAssets =
+    {
+        "res://scenes/ui/card_hover_tip.tscn",
+        "res://scenes/vfx/whole_screen/vfx_smoky_vignette.tscn",
+        "res://scenes/vfx/vfx_heal_osty.tscn",
+        "res://scenes/events/ancient_dialogue_line.tscn",
+        "res://images/ui/run_history/monster.png",
+        "res://images/ui/run_history/monster_outline.png",
+        "res://images/ui/run_history/event.png",
+        "res://images/ui/run_history/event_outline.png",
+        "res://images/ui/run_history/unknown_monster.png",
+        "res://images/ui/run_history/unknown_monster_outline.png",
+        "res://images/ui/run_history/shop.png",
+        "res://images/ui/run_history/shop_outline.png",
+        "res://images/ui/run_history/rest_site.png",
+        "res://images/ui/run_history/rest_site_outline.png",
+        "res://images/powers/weak_power.png",
+        "res://images/powers/vulnerable_power.png",
+        "res://images/powers/strength_power.png",
+        "res://images/powers/frail_power.png",
+        "res://images/powers/dexterity_power.png",
+        "res://images/powers/poison_power.png",
+        "res://images/powers/shrink_power.png",
+        "res://images/powers/die_for_you_power.png",
+        "res://images/powers/star_next_turn_power.png",
+        "res://images/packed/sprite_fonts/star_icon.png",
+        "res://images/packed/sprite_fonts/ironclad_energy_icon.png",
+        "res://images/packed/sprite_fonts/silent_energy_icon.png",
+        "res://images/packed/sprite_fonts/defect_energy_icon.png",
+        "res://images/packed/sprite_fonts/necrobinder_energy_icon.png",
+        "res://images/packed/sprite_fonts/regent_energy_icon.png",
+    };
+
     // ------------------------------------------------------------------
     // 1. Tight allowlist preload filter in PreloadManager.LoadAssets
     // ------------------------------------------------------------------
@@ -96,6 +133,7 @@ public static class PreloadPatches
         bool isRoomOrAct = !name.StartsWith("characters=", StringComparison.Ordinal);
 
         var kept = new List<string>();
+        var keptSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int total = 0;
         int keptVfx = 0;
         int skipped = 0;
@@ -108,8 +146,11 @@ public static class PreloadPatches
 
             if (ShouldPreload(path, isRoomOrAct, out bool isCoreVfx))
             {
-                kept.Add(path);
-                if (isCoreVfx) keptVfx++;
+                if (keptSet.Add(path))
+                {
+                    kept.Add(path);
+                    if (isCoreVfx) keptVfx++;
+                }
             }
             else
             {
@@ -117,7 +158,25 @@ public static class PreloadPatches
             }
         }
 
+#if HAVE_GODOTSHARP
+        int injected = 0;
+        if (!isRoomOrAct)
+        {
+            for (int i = 0; i < ExtraWarmRunAssets.Length; i++)
+            {
+                string extra = ExtraWarmRunAssets[i];
+                if (!keptSet.Contains(extra) && Godot.ResourceLoader.Exists(extra))
+                {
+                    keptSet.Add(extra);
+                    kept.Add(extra);
+                    injected++;
+                }
+            }
+        }
+        SwitchLog.Info($"Preload filter '{name}': {kept.Count}/{total} kept ({keptVfx} core vfx, +{injected} warm, {skipped} deferred)");
+#else
         SwitchLog.Info($"Preload filter '{name}': {kept.Count}/{total} kept ({keptVfx} core vfx, {skipped} deferred)");
+#endif
         __arg0 = kept;
     }
 
@@ -266,6 +325,14 @@ public static class PreloadPatches
         }
 
         return false;
+    }
+
+    // Immediately kick the next serialized background load on the SAME frame
+    // that CheckLoadingStatus drains _loading, eliminating 2 dead frames per asset.
+    [SwitchPostfix("MegaCrit.Sts2.Core.Assets.AssetLoadingSession", "CheckLoadingStatus")]
+    public static void KickNextSerializedLoad(object __instance)
+    {
+        SerializeThreadedLoading(__instance);
     }
 #endif
 

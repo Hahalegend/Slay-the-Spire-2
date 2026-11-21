@@ -17,13 +17,34 @@
 //      physics CPU overhead without affecting turn-based card gameplay.
 
 using System;
+using System.Reflection;
 using STS2Switch;
 
 namespace STS2Switch.Patches;
 
-[SwitchPatches(Note = "Switch frame pacing (single-sync via NWindow), 30Hz physics, and safe GrabFocus")]
+[SwitchPatches(Note = "Switch frame pacing (single-sync via NWindow), 30Hz physics, safe GrabFocus, and quiet PacketWriter")]
 public static class PerformancePatches
 {
+    private static PropertyInfo? _warnOnGrowProp;
+    private static bool _warnOnGrowResolved;
+
+    // ------------------------------------------------------------------
+    // 0. Silence PacketWriter 6x buffer-grow warning log spam after combats.
+    // ------------------------------------------------------------------
+    [SwitchPostfix("MegaCrit.Sts2.Core.Multiplayer.Serialization.PacketWriter", ".ctor", Optional = true)]
+    public static void SilencePacketWriterGrowWarnings(object __instance)
+    {
+        if (!_warnOnGrowResolved)
+        {
+            _warnOnGrowProp = __instance.GetType().GetProperty("WarnOnGrow");
+            _warnOnGrowResolved = true;
+        }
+        try
+        {
+            _warnOnGrowProp?.SetValue(__instance, false);
+        }
+        catch { }
+    }
     // ------------------------------------------------------------------
     // 1. Guard Control.GrabFocus() against detached/invalid/unfocusable controls.
     //    Fixes 01795245857 (Viewport::_gui_remove_focus_for_window crash) and

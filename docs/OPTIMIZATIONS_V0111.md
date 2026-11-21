@@ -22,6 +22,10 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
     ```bash
     python scripts/patch-nro-gpu-clock.py path/to/sts2.nro
     ```
+- **Native Nintendo Switch controller layout & zero-alloc polling (`patches/STS2Switch/ControllerPatches.cs`):**
+  - Remaps Godot `InputMap` `controller_face_button_north` → `JoyButton.X` (`2`, physical Switch **X** = End Turn / Confirm) and `controller_face_button_west` → `JoyButton.Y` (`3`, physical Switch **Y** = Top Panel), fixing the X/Y button swap.
+  - Aligns `SwitchConfig` on-screen glyphs (`FaceButtonSouthGlyph` → `switch/a.tres`, `FaceButtonEastGlyph` → `switch/b.tres`) so all four face buttons (`A`, `B`, `X`, `Y`) and prompts match Nintendo Switch natively.
+  - Caches `Controller.AllControllerInputs` (eliminating 60 array allocations/sec in `ProcessInput()`) and skips redundant `Input.GetConnectedJoypads()` native array allocations once `SwitchConfig` is active.
 - **Blank screen during enemy attacks & scene-baked GPU particle fix (`patches/STS2Switch/ScreenVfxPatches.cs`):**
   - With `skip_compute 1` (required to prevent NVK GM20B GPU hangs on `ParticlesShaderRD`), full-screen `BackBufferCopy` overlays sampling `hint_screen_texture, filter_linear_mipmap` read black (`vec3(0.0)`) and blank the entire screen during enemy attacks (`NRadialBlurVfx` on `ShrinkerBeetle`, `BygoneEffigy`, `CeremonialBeast`, `MechaKnight`, `Vantom`) and `DoomPower` (`NDoomOverlayVfx`).
   - Prefixes `NRadialBlurVfx._Ready`/`Activate` and `NDoomOverlayVfx._Ready`/`PlayVfx` to disable them cleanly, and installs a lightweight `SceneTree.NodeAdded` guard that disables every `BackBufferCopy` (`CopyMode = Disabled`) and every scene-baked `GpuParticles2D` (`emitting=true` in `.tscn`, such as Regent ×6, Fogmog ×3, Vantom ×52, The Insatiable ×68, Waterfall Giant ×182) before its first frame renders.
@@ -39,7 +43,7 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
 - **Tuned Switch configs (`configs/config.txt` & `configs/override.cfg`):**
   - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`, `mem_trend 0`, `run/flush_stdout_on_print=false`, `always_track_call_stacks=false`).
   - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 0`, `gc_region_range_mb 384`, `thread_stack_kb 2048`).
-  - Sets `resolution_height 540`, `swapchain_image_count=3`, `frame_queue_size=2`, `pipeline_cache/save_chunk_size_mb=1` (eliminating 8 MB SD write spikes), and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
+  - Sets `resolution_height 540`, `2d/batching/item_buffer_size=32768`, `2d/batching/uniform_set_cache_size=256`, `use_nearest_mipmap_filter=true`, `swapchain_image_count=3`, `frame_queue_size=2`, `pipeline_cache/save_chunk_size_mb=1` (eliminating 8 MB SD write spikes), and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
 
 ### 3. Native Windows Build (No Docker or WSL Required)
 - **`scripts/build-windows-native.ps1`** replicates `scripts/docker-entry.sh` directly on Windows using portable:
