@@ -740,16 +740,28 @@ static pthread_cond_t *ensure_cond(pthread_cond_t **cnd) {
 
 static int pthread_cond_init_fake(pthread_cond_t **cnd, const int *condattr) {
   LOCK_CALLER_HERE();
-  // sts2_condattr_init/_setclock (nativeaot_shim.c, what StS2.so's
-  // OWN calls to "pthread_condattr_init" etc actually resolve to) store
-  // the bionic clockid_t directly as this plain int -- not bionic's own
-  // attr encoding, but consistent within our own shim, which is all that
-  // matters since both sides of this handoff are our code.
+  if (!cnd) return -1;
+  // POSIX pthread_cond_init() is called on UNINITIALIZED storage (e.g.
+  // malloc(0x58) in .NET's SystemNative_LowLevelMonitor_Create). With
+  // poison_free=0, that memory frequently holds a stale 8-byte-aligned heap
+  // pointer from a prior allocation. Calling ensure_cond_clocked() without
+  // overwriting the slot first caused looks_like_our_heap_ptr() to accept the
+  // stale pointer as an existing condvar, corrupting live heap objects on wait/
+  // signal and crashing inside free() on pthread_cond_destroy().
+  // Mirror pthread_mutex_init_fake(): unconditionally allocate and store a
+  // fresh backing condvar with the requested clock_id.
   int clock_id = condattr ? *condattr : -1;
-  pthread_cond_t *c = ensure_cond_clocked(cnd, clock_id);
+  pthread_cond_t *c = make_cond(clock_id);
   if (sts2_trace_all)
     debugPrintf("[pthread_cond_init] cnd=%p clock=%d -> c=%p\n", (void*)cnd, clock_id, (void*)c);
-  return c ? 0 : -1;
+  if (!c) return -1;
+  {
+    uint64_t *sl = lazy_slot(cnd);
+    LOCK_TRACE(LOCK_OP_INIT, LOCK_KIND_COND, sl,
+               __atomic_load_n(sl, __ATOMIC_RELAXED), (uint64_t)(uintptr_t)c);
+    __atomic_store_n(sl, (uint64_t)(uintptr_t)c, __ATOMIC_RELEASE);
+  }
+  return 0;
 }
 static int pthread_cond_broadcast_fake(pthread_cond_t **cnd) {
   LOCK_CALLER_HERE();

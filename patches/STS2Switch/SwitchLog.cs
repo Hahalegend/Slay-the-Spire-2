@@ -52,7 +52,7 @@ public static class SwitchLog
     //
     // This is a hash of ModelDbPatches.cs + PlatformPatches.cs at weave time,
     // so a glance at the log says which patch set is actually on the card.
-    public const string PatchSetId = "0e1ff8ea";
+    public const string PatchSetId = "5024a481";
 
     private static bool _announced;
 

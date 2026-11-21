@@ -178,6 +178,7 @@ public static class PreloadPatches
         }
 
         bool isRoomOrAct = !name.StartsWith("characters=", StringComparison.Ordinal);
+        bool isCombatRoom = name.Contains("Combat Room", StringComparison.OrdinalIgnoreCase);
 
         var kept = new List<string>();
         var keptSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -191,7 +192,7 @@ public static class PreloadPatches
             if (string.IsNullOrEmpty(path))
                 continue;
 
-            if (ShouldPreload(path, isRoomOrAct, out bool isCoreVfx))
+            if (ShouldPreload(path, isRoomOrAct, isCombatRoom, out bool isCoreVfx))
             {
                 if (keptSet.Add(path))
                 {
@@ -227,19 +228,20 @@ public static class PreloadPatches
         __arg0 = kept;
     }
 
-    private static bool ShouldPreload(string path, bool isRoomOrAct, out bool isCoreVfx)
+    private static bool ShouldPreload(string path, bool isRoomOrAct, bool isCombatRoom, out bool isCoreVfx)
     {
         isCoreVfx = false;
 
         // VFX scenes/materials/shaders:
-        // - During room/act preloads (e.g. 'Combat Room'), keep ALL room-specific
-        //   VFX requested for that fight's monsters (typically 2-6 files) so enemy
-        //   attacks never stall 350-450ms loading synchronously from microSD mid-turn.
-        // - During Embark ('characters=*'), keep ONLY the ~39 universal combat VFX
-        //   so Embark stays fast (~10s) while skipping ~285 rare card/boss/event VFX.
+        // - During 'Combat Room' preloads ONLY, keep ALL room-specific VFX
+        //   requested for that fight's monsters (typically 2-6 files, ~0.5s) so
+        //   enemy attacks never stall 350-450ms loading synchronously mid-turn.
+        // - During 'Act=*' (61+ act VFX -> 36s!) and Embark ('characters=*'),
+        //   keep ONLY the ~39 universal core combat VFX so Act/Embark loads
+        //   stay super fast (~0.5s Act, ~10s Embark).
         if (path.Contains("/vfx/", StringComparison.OrdinalIgnoreCase))
         {
-            if (isRoomOrAct)
+            if (isCombatRoom)
             {
                 isCoreVfx = true;
                 return true;
