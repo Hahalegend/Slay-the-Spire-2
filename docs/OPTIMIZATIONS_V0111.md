@@ -40,10 +40,12 @@ This fork builds on [ChanseyIsTheBest/sts2_nx](https://github.com/ChanseyIsTheBe
   - Keeps Godot Vulkan `VSync: Disabled` + `MaxFps: 60` so Switch `NWindow` (`swap_interval = 1`) handles display sync once without double-blocking FIFO stalls (proven 10× fewer stalls on hardware: 0.19% vs 1.99%), cuts physics to `30 Hz`, and disables root viewport AA/debanding.
   - Hides and stops `_process` on suppressed `GpuParticles2D` nodes (`ParticlePatches.cs`) and smooths main-thread finalizer draining to 8 objects/frame (32/frame on large bursts > 512) in `FinalizerSafetyPatches.cs`.
   - Keeps compact balanced `-O` AOT codegen (`~112 MB`, `LOAD span: ~135 MB`) for optimal Tegra X1 L1/L2 cache fit.
-- **Tuned Switch configs (`configs/config.txt` & `configs/override.cfg`):**
+- **Tuned Switch configs & official Tegra X1 `sys-clk` profile (`configs/config.txt`, `configs/override.cfg`, `configs/sys-clk-config.ini`):**
   - Disables debug allocator/logging overhead (`poison_free 0`, `lock_trace 0`, `vk_verbose 0`, `dispatch_log 0`, `mem_trend 0`, `run/flush_stdout_on_print=false`, `always_track_call_stacks=false`).
   - Keeps safety/coherency guards enabled (`free_guard 1`, `skip_compute 1`, `gpu_particles 0`, `nvk_cmd_mem_uncached 1`, `nvk_mem_stream_uncached 0`, `gc_region_range_mb 384`, `thread_stack_kb 2048`).
-  - Sets `resolution_height 540`, `2d/batching/item_buffer_size=32768`, `2d/batching/uniform_set_cache_size=256`, `use_nearest_mipmap_filter=true`, `swapchain_image_count=3`, `frame_queue_size=2`, `pipeline_cache/save_chunk_size_mb=1` (eliminating 8 MB SD write spikes), and disables MSAA/HDR 2D/Swappy with uncompressed Vulkan shader cache enabled.
+  - Sets **`resolution_height 720`** (1:1 native Switch handheld resolution for razor-sharp, readable card text), pixel-snapped crisp font rendering (`default_font_subpixel_positioning=0`, `default_font_hinting=2`), trilinear mipmaps with `-0.35` sharpen bias, doubled 2D canvas batching (`item_buffer_size=32768`, `uniform_set_cache_size=256`), `pipeline_cache/save_chunk_size_mb=1`, and uncompressed Vulkan shader cache enabled.
+  - Includes **`configs/sys-clk-config.ini`** (`[014135593A3C0000]`) using official safe NVIDIA/Nintendo Tegra X1 stock-max frequencies (`1581/1785 MHz` CPU, `460/768 MHz` GPU, `1600 MHz` RAM) — +55–75% CPU, +50–150% GPU, and +20% RAM bandwidth for crisp 720p gameplay and faster shader compiles.
+  - Zero-LINQ `NTrail2D._Process` card-trail optimization (`PerformancePatches.cs`) and `IsInstanceValid` stale-RID guard (`FinalizerSafetyPatches.cs`).
 
 ### 3. Native Windows Build (No Docker or WSL Required)
 - **`scripts/build-windows-native.ps1`** replicates `scripts/docker-entry.sh` directly on Windows using portable:

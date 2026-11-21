@@ -63,6 +63,10 @@ public static class FinalizerSafetyPatches
             drained++;
             try
             {
+#if HAVE_GODOTSHARP
+                if (obj is Godot.GodotObject go && !Godot.GodotObject.IsInstanceValid(go))
+                    continue;
+#endif
                 obj.Dispose();
             }
             catch
