@@ -1674,7 +1674,7 @@ int main(void) {
   check_syscalls();
   if (sts2_is_emulator() && !config.emu_vulkan && config.enable_vulkan) {
     debugPrintf("== emulator detected (%s): using GLES3 (Nouveau) renderer (set emu_vulkan 1 to override) ==\n",
-                sts2_using_code_memory() ? "CodeMemory" : "ProcessCodeMemory");
+                sts2_own_process_handle() == INVALID_HANDLE ? "CodeMemory" : "ProcessCodeMemory");
     config.enable_vulkan = 0;
   }
   stats_open();
