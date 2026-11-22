@@ -134,7 +134,7 @@ endif
 # libEGL.a alone pulls operator new/delete, __cxa_guard_*, __cxa_pure_virtual
 # and 12 XML_/ZSTD_ symbols; static linking is single-pass, so a dependency
 # placed before its consumer is simply not there when the consumer is scanned.
-VULKAN_LIB  := -lvulkan
+VULKAN_LIB  := -lvulkan -lnak_rs
 VULKAN_DEPS := -lexpat -lzstd -lstdc++
 
 # ORDER MATTERS, and it was wrong.
