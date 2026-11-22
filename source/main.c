@@ -428,12 +428,15 @@ static EGLContext s_ctx = EGL_NO_CONTEXT;
 // ---------------------------------------------------------------------------
 // Emulator GPU barrier compatibility shim (Yuzu / Eden / Sudachi)
 //
-// Mesa 26.2.4's nouveau_horizon_channel_create builds static cache-acquire
-// and full-barrier-acquire pushbuffers that issue Maxwell3D (0xB197) methods
-// (0x04A2, 0x0369, 0x050A, 0x0509) on subchannel 0 before any explicit
-// SET_OBJECT(0, 0xB197) is pushed. Real Tegra X1 hardware accepts this after
-// AllocateObjectContext(0xB197), whereas Yuzu 1734 stubs AllocateObjectContext
-// and leaves DmaPusher::subchannels[0] == nullptr, crashing on method 0x04A2.
+// Mesa 26.2.4's nouveau_horizon_channel_create builds static cache-acquire,
+// full-barrier-acquire, and syncpt fence pushbuffers that issue Maxwell3D
+// (0xB197) methods (0x04A2, 0x0451, 0x00B2, 0x0369, 0x050A, 0x0509) on
+// subchannel 0 before any explicit SET_OBJECT(0, 0xB197) is pushed. Real
+// Tegra X1 hardware accepts this after AllocateObjectContext(0xB197), whereas
+// Yuzu 1734 stubs AllocateObjectContext and leaves DmaPusher::subchannels[0]
+// == nullptr, crashing on method 0x04A2 or 0x0451 (note: build_report always
+// runs immediately after build_fence in channel_submit_locked, so wrapping
+// build_fence covers build_report too without altering its fixed 6-word slot).
 //
 // On real Switch (!sts2_is_emulator()), pass straight through untouched.
 // On emulators, prepend SET_OBJECT(subch=0, MaxwellB 0xB197) (2 words).
@@ -441,6 +444,7 @@ static EGLContext s_ctx = EGL_NO_CONTEXT;
 
 extern uint32_t __real_nouveau_horizon_gm20b_build_cache_acquire(uint32_t *out);
 extern uint32_t __real_nouveau_horizon_gm20b_build_full_barrier_acquire(uint32_t *out);
+extern uint32_t __real_nouveau_horizon_gm20b_build_fence(uint32_t *out, uint32_t syncpt_id, uint32_t flags);
 
 uint32_t __wrap_nouveau_horizon_gm20b_build_cache_acquire(uint32_t *out) {
   if (sts2_is_emulator()) {
@@ -458,6 +462,15 @@ uint32_t __wrap_nouveau_horizon_gm20b_build_full_barrier_acquire(uint32_t *out) 
     return 2u + __real_nouveau_horizon_gm20b_build_full_barrier_acquire(out + 2);
   }
   return __real_nouveau_horizon_gm20b_build_full_barrier_acquire(out);
+}
+
+uint32_t __wrap_nouveau_horizon_gm20b_build_fence(uint32_t *out, uint32_t syncpt_id, uint32_t flags) {
+  if (sts2_is_emulator()) {
+    out[0] = 0x20010000u; // INC(1 word, subch=0, method=0x0000 SET_OBJECT)
+    out[1] = 0x0000B197u; // MaxwellB (3D)
+    return 2u + __real_nouveau_horizon_gm20b_build_fence(out + 2, syncpt_id, flags);
+  }
+  return __real_nouveau_horizon_gm20b_build_fence(out, syncpt_id, flags);
 }
 
 static int egl_setup(void) {
