@@ -121,9 +121,10 @@ int sts2_is_emulator(void) {
     return is_emu;
   }
 
-  // 2. Real modded Nintendo Switch consoles run Atmosphere (Mesosphere kernel
-  //    and/or Exosphere SecMon). Both expose custom info/config ID 65000;
-  //    Switch emulators (Yuzu, Eden, Sudachi, Citron, Ryujinx, Ruzu) do not.
+  // 2. Real modded Nintendo Switch consoles run Atmosphere (Mesosphere kernel),
+  //    which exposes InfoType_MesosphereMeta (65000) via svcGetInfo (pure SVC,
+  //    zero IPC services required). Switch emulators (Yuzu, Eden, Sudachi,
+  //    Citron, Ryujinx, Ruzu) return ResultInvalidEnumValue.
   u64 val = 0;
   if (R_SUCCEEDED(svcGetInfo(&val, (InfoType)65000, INVALID_HANDLE, 0))) {
     is_emu = 0;
@@ -132,14 +133,6 @@ int sts2_is_emulator(void) {
   if (hosversionIsAtmosphere()) {
     is_emu = 0;
     return is_emu;
-  }
-  if (R_SUCCEEDED(splInitialize())) {
-    Result rc = splGetConfig((SplConfigItem)65000, &val);
-    splExit();
-    if (R_SUCCEEDED(rc)) {
-      is_emu = 0;
-      return is_emu;
-    }
   }
 
   is_emu = 1;
