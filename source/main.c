@@ -2098,15 +2098,20 @@ int main(void) {
   }
 
   debugPrintf("== Slay the Spire 2 Switch wrapper booting; build " __DATE__ " " __TIME__ "; data_root=%s ==\n", config.data_root);
-  if (s_egl_owns_window) {
-    debugPrintf("== EGL/GLES3 context created (%dx%d) ==\n", screen_width, screen_height);
-    stats_mark(sts2_is_emulator() ? "renderer: GLES3 (CodeMemory/emulator)"
-                                  : "renderer: GLES3 (ProcessCodeMemory)");
-  } else {
-    debugPrintf("== EGL/GLES3 NOT created: Vulkan owns the default NWindow (%dx%d) ==\n",
-                screen_width, screen_height);
-    stats_mark(sts2_is_emulator() ? "renderer: Vulkan (CodeMemory/emulator)"
-                                  : "renderer: Vulkan (ProcessCodeMemory)");
+  {
+    const char *rend = s_egl_owns_window ? "GLES3" : "Vulkan";
+    const char *env  = sts2_is_emulator() ? "emulator" : "Switch";
+    const char *mem  = (sts2_own_process_handle() != INVALID_HANDLE)
+                         ? "ProcessCodeMemory" : "CodeMemory";
+    char rbuf[96];
+    snprintf(rbuf, sizeof(rbuf), "renderer: %s (%s, %s)", rend, env, mem);
+    if (s_egl_owns_window)
+      debugPrintf("== EGL/GLES3 context created (%dx%d) [%s, %s] ==\n",
+                  screen_width, screen_height, env, mem);
+    else
+      debugPrintf("== EGL/GLES3 NOT created: Vulkan owns the default NWindow (%dx%d) [%s, %s] ==\n",
+                  screen_width, screen_height, env, mem);
+    stats_mark(rbuf);
   }
 
   // Claim the GPU pool before any module loads -- OPTIONAL, and off by default.

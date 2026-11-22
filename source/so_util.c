@@ -108,7 +108,42 @@ int sts2_codemem_available(void) {
 }
 
 int sts2_is_emulator(void) {
-  return sts2_own_process_handle() == INVALID_HANDLE;
+  static int probed = 0;
+  static int is_emu = 0;
+  if (probed)
+    return is_emu;
+  probed = 1;
+
+  // 1. Emulators that stub svcCreateSession/svcReplyAndReceive (e.g. Ruzu)
+  //    cannot produce an own process handle and rely on CodeMemory (0x4B/0x4C).
+  if (sts2_own_process_handle() == INVALID_HANDLE) {
+    is_emu = 1;
+    return is_emu;
+  }
+
+  // 2. Real modded Nintendo Switch consoles run Atmosphere (Mesosphere kernel
+  //    and/or Exosphere SecMon). Both expose custom info/config ID 65000;
+  //    Switch emulators (Yuzu, Eden, Sudachi, Citron, Ryujinx, Ruzu) do not.
+  u64 val = 0;
+  if (R_SUCCEEDED(svcGetInfo(&val, (InfoType)65000, INVALID_HANDLE, 0))) {
+    is_emu = 0;
+    return is_emu;
+  }
+  if (hosversionIsAtmosphere()) {
+    is_emu = 0;
+    return is_emu;
+  }
+  if (R_SUCCEEDED(splInitialize())) {
+    Result rc = splGetConfig((SplConfigItem)65000, &val);
+    splExit();
+    if (R_SUCCEEDED(rc)) {
+      is_emu = 0;
+      return is_emu;
+    }
+  }
+
+  is_emu = 1;
+  return is_emu;
 }
 
 // not in devkitA64's elf.h
