@@ -107,3 +107,16 @@ Then copy `configs\config.txt` and `configs\override.cfg` into `dist\sts2_nx\`, 
     python tools\merge_pck.py sts2.pck sts2_astc.pck romfs\sts2.pck
     hacbrewpack -k prod.keys --titleid 014135593a3c0000 --exefsdir exefs --romfsdir romfs --controldir control --nologo --nopatchnacplogo --nspdir out
     ```
+
+### 5. Universal Real Switch + Emulator Support (Yuzu / Eden / Sudachi / Ruzu / Ryujinx)
+- **Zero-regression real Switch preservation (`sts2_is_emulator()` in `source/so_util.c`):**
+  - Probes Atmosphere/Mesosphere kernel `svcGetInfo(&val, (InfoType)65000 /* InfoType_MesosphereMeta */, INVALID_HANDLE, 0)` and `hosversionIsAtmosphere()`. On real Atmosphere/Mesosphere Nintendo Switch hardware, `sts2_is_emulator()` always returns `0`, keeping the exact **Mesa 26.2.4 NVK Vulkan** + **`ProcessCodeMemory (0x77/0x73)`** + unmodified `nouveau_horizon` fast path.
+- **`CodeMemory (0x4B/0x4C)` fallback (`source/so_util.{h,c}`, `source/main.c`):**
+  - Resolves `"Own process handle is unavailable"` on emulators that stub `svcCreateSession (0x40)` (such as Ruzu) by falling back to `svcCreateCodeMemory` / `svcControlCodeMemory` for mapping RW/RX Android `.so` segments, while Yuzu/Eden/Sudachi and real Switch use `ProcessCodeMemory`.
+- **Mesa 26.2.4 `u_cnd_monotonic_*` deadlock fix (`source/nx_c11.c`, `source/c11_probe.c`):**
+  - `nx_c11.c` stores a 4-byte `nxc11_slot` index in `mtx_t`, whereas Mesa 26.2.4's `u_cnd_monotonic_wait` called `pthread_cond_wait(cond, (pthread_mutex_t *)mtx)` directly, returning `EINVAL` without releasing the mutex and deadlocking inside `util_queue_fence_wait` during `eglCreateContext`.
+  - Implemented all six `u_cnd_monotonic_{init,destroy,broadcast,signal,wait,timedwait}` entry points on the shared `nxc11_slot` table (with `CLOCK_MONOTONIC` deadlines and Mesa's exact `thrd_*` return codes: `0=success, 1=timedout, 2=error, 3=busy, 4=nomem`).
+- **Automatic Emulator GLES3 (`NV12B`) Renderer + Yuzu GPU Pushbuffer & Thread Fixes (`source/main.c`, `source/config.{h,c}`, `Makefile`):**
+  - Real Switch stays on **Mesa NVK Vulkan**; emulators automatically select **Mesa Gallium Nouveau GLES3 (`NV12B`)** to avoid unimplemented NVK Maxwell instructions/MME panics in Switch emulators (overridable via `emu_vulkan 1` in `/switch/sts2_nx/config.txt`, which overlays embedded `romfs:/config.txt` via `read_config_overlay()`).
+  - Wraps `nouveau_horizon_gm20b_build_cache_acquire`, `nouveau_horizon_gm20b_build_full_barrier_acquire`, and `nouveau_horizon_gm20b_build_fence` (`-Wl,--wrap`) to prepend `SET_OBJECT(subch=0, 0xB197)` (`{ 0x20010000u, 0x0000B197u }`) on emulators only, fixing Yuzu 1734's `DmaPusher::subchannels[0] == nullptr` crash (`method 0x4A2` / `0x451`) caused by stubbed `AllocateObjectContext` while leaving real Switch pushbuffers untouched.
+  - Disables Mesa's background `mesa_glthread` and Gallium `GALLIUM_THREAD` workers on emulators (`!s_use_vulkan && sts2_is_emulator()`), fixing the asynchronous `glthread_unmarshal_batch -> glDrawElementsInstancedBaseVertex -> u_vbuf_draw_vbo -> primconvert_init_draw` crash on the Main Menu and reducing emulated CPU thread contention (booting faster to Main Menu and running cleanly with zero unmapped reads or crashes in Yuzu 1734).
