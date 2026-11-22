@@ -285,7 +285,11 @@ static void check_syscalls(void) {
     if (!envIsSyscallHinted(0x78)) fatal_error("svcUnmapProcessCodeMemory is unavailable.");
     if (!envIsSyscallHinted(0x73)) fatal_error("svcSetProcessMemoryPermission is unavailable.");
   }
-  if (sts2_own_process_handle() == INVALID_HANDLE) fatal_error("Own process handle is unavailable.");
+  if (sts2_own_process_handle() == INVALID_HANDLE) {
+    if (!sts2_codemem_available())
+      fatal_error("Neither ProcessCodeMemory nor CodeMemory (0x4B/0x4C) is available.");
+    debugPrintf("[so] using CodeMemory (0x4B/0x4C) fallback backend\n");
+  }
 }
 
 // Every probe is built from config.data_root rather than a bare filename.

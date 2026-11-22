@@ -19,9 +19,15 @@
 // or obtained once via self-IPC copy-handle when running as a standalone NSO.
 Handle sts2_own_process_handle(void);
 
+// Returns 1 if svcCreateCodeMemory / svcControlCodeMemory (0x4B/0x4C) can be
+// used as a fallback when no real process handle is available (e.g. emulators
+// like yuzu/ruzu/Ryujinx that stub svcCreateSession/svcReplyAndReceive).
+int sts2_codemem_available(void);
+
 #define ALIGN_MEM(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 
 #define SO_MAX_SEGMENTS 8
+#define SO_MAX_CM_RUNS  32
 
 typedef struct {
   char *symbol;
@@ -58,6 +64,14 @@ typedef struct so_module {
   int finalized;
   char *shstrtab;
   char *dynstrtab;
+
+  // CodeMemory (0x4B/0x4C) fallback mappings used when no process handle is
+  // available (emulators). Unused (cm_count == 0) on real Switch hardware.
+  int cm_count;
+  Handle cm_handles[SO_MAX_CM_RUNS];
+  void *cm_addrs[SO_MAX_CM_RUNS];
+  size_t cm_sizes[SO_MAX_CM_RUNS];
+  uint8_t cm_is_x[SO_MAX_CM_RUNS];
 } so_module;
 
 void hook_arm64(uintptr_t addr, uintptr_t dst);

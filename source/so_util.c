@@ -24,6 +24,9 @@
 #include "app_paths.h"
 
 static Handle s_own_proc_handle = INVALID_HANDLE;
+static int s_own_proc_probed = 0;
+static int s_codemem_probed = 0;
+static int s_codemem_ok = 0;
 
 static void sts2_proc_handle_recv_thread(void *arg) {
   Handle session = (Handle)(uintptr_t)arg;
@@ -44,15 +47,20 @@ Handle sts2_own_process_handle(void) {
   Handle h = envGetOwnProcessHandle();
   if (h != INVALID_HANDLE)
     return h;
-  if (s_own_proc_handle != INVALID_HANDLE)
+  if (s_own_proc_probed)
     return s_own_proc_handle;
+  s_own_proc_probed = 1;
 
   // Standalone NSO path (same IPC technique as nx-hbloader): copy
   // CUR_PROCESS_HANDLE across an in-process session to obtain a real handle
   // accepted by svcMapProcessCodeMemory / svcSetProcessMemoryPermission.
   Handle server_handle = INVALID_HANDLE, client_handle = INVALID_HANDLE;
-  if (R_FAILED(svcCreateSession(&server_handle, &client_handle, 0, 0)))
+  if (R_FAILED(svcCreateSession(&server_handle, &client_handle, 0, 0)) ||
+      server_handle == INVALID_HANDLE || client_handle == INVALID_HANDLE) {
+    if (server_handle != INVALID_HANDLE) svcCloseHandle(server_handle);
+    if (client_handle != INVALID_HANDLE) svcCloseHandle(client_handle);
     return INVALID_HANDLE;
+  }
 
   Thread t;
   if (R_FAILED(threadCreate(&t, &sts2_proc_handle_recv_thread,
@@ -74,6 +82,29 @@ Handle sts2_own_process_handle(void) {
   }
   threadClose(&t);
   return s_own_proc_handle;
+}
+
+int sts2_codemem_available(void) {
+  if (s_codemem_probed)
+    return s_codemem_ok;
+  s_codemem_probed = 1;
+
+  void *probe = memalign(0x1000, 0x1000);
+  if (!probe)
+    return 0;
+  Handle cm = INVALID_HANDLE;
+  Result rc = svcCreateCodeMemory(&cm, probe, 0x1000);
+  if (R_SUCCEEDED(rc) && cm != INVALID_HANDLE) {
+    s_codemem_ok = 1;
+    svcCloseHandle(cm);
+  }
+  MemoryInfo mi;
+  u32 pi;
+  if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, (u64)(uintptr_t)probe)) &&
+      (mi.perm & Perm_Rw) == Perm_Rw) {
+    free(probe);
+  }
+  return s_codemem_ok;
 }
 
 // not in devkitA64's elf.h
@@ -109,47 +140,9 @@ void so_free_temp(so_module *mod) {
 
 void so_finalize(so_module *mod) {
   Result rc = 0;
+  Handle proc = sts2_own_process_handle();
 
-  // map the entire thing as code memory
-  rc = svcMapProcessCodeMemory(sts2_own_process_handle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
-  if (R_FAILED(rc)) fatal_error("Error: svcMapProcessCodeMemory failed:\n%08x", rc);
-
-  // ------------------------------------------------------------------------
-  // Re-point the symbol tables from load_base to load_virtbase.
-  //
-  // MapProcessCodeMemory makes the SOURCE range inaccessible -- the kernel
-  // drops load_base to Perm_None once it is mapped at load_virtbase. syms and
-  // dynstrtab were computed as load_base + sh_addr in so_load, so from here on
-  // every read through them is a Data Abort, not stale data.
-  //
-  // That matters because so_resolve_symbol walks the whole so_list and calls
-  // so_lookup_export on each module, INCLUDING already-finalized ones. Any
-  // module loaded later that needs a symbol not in the shim table -- e.g.
-  // libfmod.so reaching for C++ symbols in libc++_shared -- walks straight
-  // into a finalized module and faults on mod->syms[i].
-  //
-  // .dynsym and .dynstr are SHF_ALLOC, so their contents are inside a PT_LOAD
-  // segment and exist at load_virtbase + sh_addr just as they did at
-  // load_base + sh_addr. Rebasing the two pointers costs nothing and keeps
-  // cross-module lookup working for the lifetime of the process.
-  //
-  // This is the crash from the first hardware run:
-  //   so_lookup_export (so_util.c:323) <- so_resolve_symbol
-  //   <- sts2_resolve_imports <- sts2_load_fmod_module <- dlopen_fake
-  // ------------------------------------------------------------------------
-  if (mod->syms)
-    mod->syms = (Elf64_Sym *)((uintptr_t)mod->load_virtbase +
-                              ((uintptr_t)mod->syms - (uintptr_t)mod->load_base));
-  if (mod->dynstrtab)
-    mod->dynstrtab = (char *)((uintptr_t)mod->load_virtbase +
-                              ((uintptr_t)mod->dynstrtab - (uintptr_t)mod->load_base));
-  mod->finalized = 1;
-
-  // the kernel never allows W -> X transitions on code memory, so the RX
-  // segments must be set first, straight from the freshly-mapped state;
-  // everything else (data segments AND the alignment gaps lld leaves
-  // between segments) becomes RW afterwards. build a page map to emit
-  // each permission exactly once per page.
+  // Build per-page RX vs RW map first (shared by both backends).
   const size_t num_pages = mod->load_size / 0x1000;
   uint8_t *is_x_page = calloc(num_pages, 1);
   if (!is_x_page) fatal_error("Error: out of memory in so_finalize");
@@ -164,24 +157,107 @@ void so_finalize(so_module *mod) {
       is_x_page[pg] = 1;
   }
 
-  // pass 0 sets the executable runs to RX, pass 1 sets the rest to RW
-  for (int want_x = 1; want_x >= 0; want_x--) {
+  if (proc != INVALID_HANDLE) {
+    // Primary real-Switch path: map entire module as ProcessCodeMemory and set
+    // RX segments first (W -> X is forbidden on code memory), then RW.
+    rc = svcMapProcessCodeMemory(proc, (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
+    if (R_FAILED(rc)) fatal_error("Error: svcMapProcessCodeMemory failed:\n%08x", rc);
+
+    for (int want_x = 1; want_x >= 0; want_x--) {
+      size_t pg = 0;
+      while (pg < num_pages) {
+        if (is_x_page[pg] != want_x) {
+          pg++;
+          continue;
+        }
+        size_t run_end = pg;
+        while (run_end < num_pages && is_x_page[run_end] == want_x)
+          run_end++;
+        const u64 addr = (u64)mod->load_virtbase + pg * 0x1000;
+        const u64 size = (run_end - pg) * 0x1000;
+        rc = svcSetProcessMemoryPermission(proc, addr, size, want_x ? Perm_Rx : Perm_Rw);
+        if (R_FAILED(rc)) fatal_error("Error: could not map %u bytes of %s memory at %p:\n%08x", (u32)size, want_x ? "RX" : "RW", (void *)addr, rc);
+        pg = run_end;
+      }
+    }
+  } else {
+    // Fallback path for emulators (yuzu/ruzu/Ryujinx) where svcCreateSession is
+    // stubbed: map each contiguous RX/RW page run into the exact same reserved
+    // AliasCode virtual range via svcCreateCodeMemory + svcControlCodeMemory
+    // (0x4B/0x4C). Both CodeOut (MapOwner/RW) and GeneratedCode (MapSlave/RX)
+    // share AliasCode space, preserving all ELF ADRP/PC-relative offsets.
+    mod->cm_count = 0;
     size_t pg = 0;
     while (pg < num_pages) {
-      if (is_x_page[pg] != want_x) {
-        pg++;
-        continue;
-      }
+      const uint8_t want_x = is_x_page[pg];
       size_t run_end = pg;
       while (run_end < num_pages && is_x_page[run_end] == want_x)
         run_end++;
-      const u64 addr = (u64)mod->load_virtbase + pg * 0x1000;
-      const u64 size = (run_end - pg) * 0x1000;
-      rc = svcSetProcessMemoryPermission(sts2_own_process_handle(), addr, size, want_x ? Perm_Rx : Perm_Rw);
-      if (R_FAILED(rc)) fatal_error("Error: could not map %u bytes of %s memory at %p:\n%08x", (u32)size, want_x ? "RX" : "RW", (void *)addr, rc);
+
+      const size_t run_off  = pg * 0x1000;
+      const size_t run_size = (run_end - pg) * 0x1000;
+      void *src = (void *)((uintptr_t)mod->load_base + run_off);
+      void *dst = (void *)((uintptr_t)mod->load_virtbase + run_off);
+
+      // svcCreateCodeMemory zeroes/0xFF-fills backing pages on creation, so
+      // snapshot the already-relocated bytes before locking the source pages.
+      void *backup = malloc(run_size);
+      if (!backup) fatal_error("Error: OOM backing up %u KB in so_finalize", (unsigned)(run_size >> 10));
+      memcpy(backup, src, run_size);
+
+      Handle cm = INVALID_HANDLE;
+      rc = svcCreateCodeMemory(&cm, src, run_size);
+      if (R_FAILED(rc)) fatal_error("Error: svcCreateCodeMemory(%u KB) failed:\n%08x", (unsigned)(run_size >> 10), rc);
+
+      if (!want_x) {
+        rc = svcControlCodeMemory(cm, CodeMapOperation_MapOwner, dst, run_size, Perm_Rw);
+        if (R_FAILED(rc)) fatal_error("Error: svcControlCodeMemory(MapOwner RW, %p, %u KB) failed:\n%08x", dst, (unsigned)(run_size >> 10), rc);
+        memcpy(dst, backup, run_size);
+        free(backup);
+      } else {
+        virtmemLock();
+        void *tmp_rw = virtmemFindCodeMemory(run_size, 0x1000);
+        VirtmemReservation *tmp_rv = virtmemAddReservation(tmp_rw, run_size);
+        virtmemUnlock();
+
+        rc = svcControlCodeMemory(cm, CodeMapOperation_MapOwner, tmp_rw, run_size, Perm_Rw);
+        if (R_FAILED(rc)) fatal_error("Error: svcControlCodeMemory(MapOwner tmp, %p, %u KB) failed:\n%08x", tmp_rw, (unsigned)(run_size >> 10), rc);
+
+        memcpy(tmp_rw, backup, run_size);
+        free(backup);
+        armDCacheFlush(tmp_rw, run_size);
+
+        rc = svcControlCodeMemory(cm, CodeMapOperation_UnmapOwner, tmp_rw, run_size, Perm_None);
+        if (R_FAILED(rc)) fatal_error("Error: svcControlCodeMemory(UnmapOwner tmp) failed:\n%08x", rc);
+
+        virtmemLock();
+        virtmemRemoveReservation(tmp_rv);
+        virtmemUnlock();
+
+        rc = svcControlCodeMemory(cm, CodeMapOperation_MapSlave, dst, run_size, Perm_Rx);
+        if (R_FAILED(rc)) fatal_error("Error: svcControlCodeMemory(MapSlave RX, %p, %u KB) failed:\n%08x", dst, (unsigned)(run_size >> 10), rc);
+      }
+
+      if (mod->cm_count < SO_MAX_CM_RUNS) {
+        int idx = mod->cm_count++;
+        mod->cm_handles[idx] = cm;
+        mod->cm_addrs[idx] = dst;
+        mod->cm_sizes[idx] = run_size;
+        mod->cm_is_x[idx] = want_x;
+      }
       pg = run_end;
     }
   }
+
+  // Re-point the symbol tables from load_base to load_virtbase (load_base is
+  // now inaccessible under both ProcessCodeMemory and CodeMemory).
+  if (mod->syms)
+    mod->syms = (Elf64_Sym *)((uintptr_t)mod->load_virtbase +
+                              ((uintptr_t)mod->syms - (uintptr_t)mod->load_base));
+  if (mod->dynstrtab)
+    mod->dynstrtab = (char *)((uintptr_t)mod->load_virtbase +
+                              ((uintptr_t)mod->dynstrtab - (uintptr_t)mod->load_base));
+  mod->finalized = 1;
 
   free(is_x_page);
 }
@@ -568,17 +644,27 @@ int so_unload(so_module *mod) {
     so_free_temp(mod);
   }
 
-  // remap everything as RW
-  for (int i = 0; i < mod->phnum; i++) {
-    const Elf64_Phdr *p = &mod->phdr[i];
-    if (p->p_type != PT_LOAD || !(p->p_flags & PF_X))
-      continue;
-    const u64 seg_start = ((u64)mod->load_virtbase + p->p_vaddr) & ~0xFFFull;
-    const u64 seg_end = ALIGN_MEM((u64)mod->load_virtbase + p->p_vaddr + p->p_memsz, 0x1000);
-    svcSetProcessMemoryPermission(sts2_own_process_handle(), seg_start, seg_end - seg_start, Perm_Rw);
+  if (mod->cm_count > 0) {
+    for (int i = 0; i < mod->cm_count; i++) {
+      svcControlCodeMemory(mod->cm_handles[i],
+                           mod->cm_is_x[i] ? CodeMapOperation_UnmapSlave : CodeMapOperation_UnmapOwner,
+                           mod->cm_addrs[i], mod->cm_sizes[i], Perm_None);
+      svcCloseHandle(mod->cm_handles[i]);
+    }
+    mod->cm_count = 0;
+  } else {
+    // remap everything as RW
+    for (int i = 0; i < mod->phnum; i++) {
+      const Elf64_Phdr *p = &mod->phdr[i];
+      if (p->p_type != PT_LOAD || !(p->p_flags & PF_X))
+        continue;
+      const u64 seg_start = ((u64)mod->load_virtbase + p->p_vaddr) & ~0xFFFull;
+      const u64 seg_end = ALIGN_MEM((u64)mod->load_virtbase + p->p_vaddr + p->p_memsz, 0x1000);
+      svcSetProcessMemoryPermission(sts2_own_process_handle(), seg_start, seg_end - seg_start, Perm_Rw);
+    }
+    // unmap everything
+    svcUnmapProcessCodeMemory(sts2_own_process_handle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
   }
-  // unmap everything
-  svcUnmapProcessCodeMemory(sts2_own_process_handle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
 
   // release virtual address range
   virtmemLock();
