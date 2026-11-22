@@ -1673,7 +1673,8 @@ int main(void) {
 
   check_syscalls();
   if (sts2_is_emulator() && !config.emu_vulkan && config.enable_vulkan) {
-    debugPrintf("== emulator detected (CodeMemory fallback): using GLES3 (Nouveau) renderer (set emu_vulkan 1 to override) ==\n");
+    debugPrintf("== emulator detected (%s): using GLES3 (Nouveau) renderer (set emu_vulkan 1 to override) ==\n",
+                sts2_using_code_memory() ? "CodeMemory" : "ProcessCodeMemory");
     config.enable_vulkan = 0;
   }
   stats_open();
@@ -2064,6 +2065,16 @@ int main(void) {
 
   s_use_vulkan = config.enable_vulkan && vulkan_shim_probe();
   if (!s_use_vulkan) {
+    if (sts2_is_emulator()) {
+      // Disable Mesa's background glthread and Gallium threaded_context workers
+      // on emulators: avoids async unmarshal/u_vbuf races in
+      // glDrawElementsInstancedBaseVertex and cuts thread contention across
+      // emulated Switch cores. Real Switch stays on Vulkan (s_use_vulkan=1).
+      setenv("mesa_glthread", "false", 1);
+      setenv("MESA_GLTHREAD", "0", 1);
+      setenv("MESA_SWITCH_GLTHREAD", "0", 1);
+      setenv("GALLIUM_THREAD", "0", 1);
+    }
     if (egl_setup() != 0)
       fatal_error("Could not create the EGL/GLES3 context.");
     s_egl_owns_window = 1;
