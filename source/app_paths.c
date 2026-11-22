@@ -62,6 +62,33 @@ static char s_log_path[352];
 static char s_trace[TRACE_MAX];
 static int  s_trace_len = 0;
 static int  s_resolved = 0;
+static int  s_is_romfs = 0;
+
+static void resolve_once(void);
+
+static void app_paths_atexit(void) {
+  if (s_is_romfs) {
+    romfsExit();
+    s_is_romfs = 0;
+  }
+}
+
+int app_paths_is_romfs(void) {
+  resolve_once();
+  return s_is_romfs;
+}
+
+const char *app_paths_real_path(const char *path, char *buf, size_t sz) {
+  if (!path) return path;
+  if (strncmp(path, "/romfs/", 7) == 0) {
+    snprintf(buf, sz, "romfs:/%s", path + 7);
+    return buf;
+  }
+  if (strcmp(path, "/romfs") == 0) {
+    return "romfs:/";
+  }
+  return path;
+}
 
 static void trace(const char *fmt, ...) {
   if (s_trace_len >= TRACE_MAX - 1) return;
@@ -149,6 +176,28 @@ static void resolve_once(void) {
   s_resolved = 1;
 
   char cand[288];
+
+  // -- 0. Embedded RomFS (standalone NSP) ---------------------------------
+  // Mount RomFS first: if our engine library lives inside the NSP's RomFS,
+  // expose it via the POSIX-style virtual root "/romfs" (mapped to "romfs:/"
+  // by app_paths_real_path / sandbox_path so Godot treats it as an absolute
+  // path) and keep writable saves/caches/logs under /switch/sts2_nx/save.
+  if (R_SUCCEEDED(romfsInit())) {
+    struct stat rst;
+    if (stat("romfs:/" APP_MARKER, &rst) == 0 && S_ISREG(rst.st_mode)) {
+      s_is_romfs = 1;
+      atexit(app_paths_atexit);
+      strlcpy(s_data_root, "/romfs", sizeof(s_data_root));
+      snprintf(s_save_root, sizeof(s_save_root), "%s/save", DEFAULT_DATA_ROOT);
+      snprintf(s_log_path,  sizeof(s_log_path),  "%s/%s", s_save_root, LOG_NAME);
+      mkdir("/switch", 0777);
+      mkdir(DEFAULT_DATA_ROOT, 0777);
+      mkdir(s_save_root, 0777);
+      trace("[paths] using embedded RomFS: /romfs (saves -> %s)\n", s_save_root);
+      return;
+    }
+    romfsExit();
+  }
 
   // -- 1. argv[0] ---------------------------------------------------------
   if (__system_argc > 0 && __system_argv && __system_argv[0]) {

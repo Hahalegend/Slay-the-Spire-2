@@ -280,10 +280,12 @@ void __libnx_initheap(void) {
 }
 
 static void check_syscalls(void) {
-  if (!envIsSyscallHinted(0x77)) fatal_error("svcMapProcessCodeMemory is unavailable.");
-  if (!envIsSyscallHinted(0x78)) fatal_error("svcUnmapProcessCodeMemory is unavailable.");
-  if (!envIsSyscallHinted(0x73)) fatal_error("svcSetProcessMemoryPermission is unavailable.");
-  if (envGetOwnProcessHandle() == INVALID_HANDLE) fatal_error("Own process handle is unavailable.");
+  if (!envIsNso()) {
+    if (!envIsSyscallHinted(0x77)) fatal_error("svcMapProcessCodeMemory is unavailable.");
+    if (!envIsSyscallHinted(0x78)) fatal_error("svcUnmapProcessCodeMemory is unavailable.");
+    if (!envIsSyscallHinted(0x73)) fatal_error("svcSetProcessMemoryPermission is unavailable.");
+  }
+  if (sts2_own_process_handle() == INVALID_HANDLE) fatal_error("Own process handle is unavailable.");
 }
 
 // Every probe is built from config.data_root rather than a bare filename.
@@ -292,10 +294,10 @@ static void check_syscalls(void) {
 // entirely, and a bare stat() would then fail with a message pointing at the
 // wrong problem.
 static void check_probe(const char *rel, const char *hint) {
-  char path[352];
+  char path[352], real_path[352];
   snprintf(path, sizeof(path), "%s/%s", config.data_root, rel);
   struct stat st;
-  if (stat(path, &st) < 0)
+  if (stat(app_paths_real_path(path, real_path, sizeof(real_path)), &st) < 0)
     fatal_error("Could not find\n%s\nin %s.\n\n%s", rel, config.data_root, hint);
 }
 
@@ -323,10 +325,10 @@ static void check_data(void) {
   // the SD card. Warn rather than fail: config.enable_fmod=0 is a legitimate
   // way to boot silently while debugging something else.
   if (config.enable_fmod) {
-    char probe[352];
+    char probe[352], real_probe[352];
     struct stat st;
     snprintf(probe, sizeof(probe), "%s/%s", config.data_root, FMOD_CORE_SO_NAME);
-    if (stat(probe, &st) < 0)
+    if (stat(app_paths_real_path(probe, real_probe, sizeof(real_probe)), &st) < 0)
       debugPrintf("[data] %s missing -- it is in assets/native/ in the APK, "
                   "not lib/arm64-v8a/. Audio will not initialise.\n",
                   FMOD_CORE_SO_NAME);
@@ -337,7 +339,8 @@ static void check_data(void) {
   // loads. Report what is actually there, since a silent prefix match is
   // otherwise invisible and the difference matters when comparing logs.
   {
-    DIR *d = opendir(config.data_root);
+    char real_root[352];
+    DIR *d = opendir(app_paths_real_path(config.data_root, real_root, sizeof(real_root)));
     if (d) {
       struct dirent *e;
       while ((e = readdir(d)) != NULL) {
@@ -654,7 +657,8 @@ static FILE *s_stats;
 
 static void stats_open(void) {
   char p[300];
-  snprintf(p, sizeof(p), "%s/boot_stats.txt", config.data_root);
+  snprintf(p, sizeof(p), "%s/boot_stats.txt",
+           app_paths_is_romfs() ? config.save_root : config.data_root);
   s_stats = fopen(p, "w");
   s_t_boot = armGetSystemTick();
   if (s_stats) {
@@ -719,9 +723,10 @@ static void game_thread_fn(void *arg) {
   // pack fails preflight, and a pack renamed to satisfy preflight is then
   // silently ignored here and the game falls back to loose assets/.
   static char pck_path[352];
+  char real_pck[352];
   snprintf(pck_path, sizeof(pck_path), "%s/%s", config.data_root, PCK_NAME);
   struct stat pck_st;
-  const int have_pck = (stat(pck_path, &pck_st) == 0);
+  const int have_pck = (stat(app_paths_real_path(pck_path, real_pck, sizeof(real_pck)), &pck_st) == 0);
   debugPrintf(">> main pack: %s (%s)\n", pck_path, have_pck ? "found" : "absent, using assets/");
   stats_mark(have_pck ? "main pack: FOUND" : "main pack: ABSENT (assets/ dir)");
 
@@ -860,14 +865,14 @@ static void game_thread_fn(void *arg) {
   // means editing a file nothing reads, and the engine says nothing either
   // way, so the wrapper says it here.
   {
-    char ovr[352];
+    char ovr[352], real_ovr[352];
     struct stat st;
     snprintf(ovr, sizeof(ovr), "%s/override.cfg", config.data_root);
 
-    if (stat(ovr, &st) == 0) {
+    if (stat(app_paths_real_path(ovr, real_ovr, sizeof(real_ovr)), &st) == 0) {
       debugPrintf(">> override.cfg present (%ld bytes); Godot reads it from the "
                   "pack directory\n", (long)st.st_size);
-    } else if (s_use_vulkan) {
+    } else if (s_use_vulkan && !app_paths_is_romfs()) {
       // Written, not merely reported, when Vulkan is driving.
       //
       // Godot's Android Vulkan backend uses Swappy (Google's Frame Pacing
@@ -1372,10 +1377,10 @@ int sts2_load_dotnet_module(void) {
   if (dotnet_mod_loaded != 0)
     return dotnet_mod_loaded > 0;
 
-  char path[300];
+  char path[300], real_path[300];
   snprintf(path, sizeof(path), "%s/%s", config.data_root, DOTNET_SO_NAME);
 
-  FILE *probe = fopen(path, "rb");
+  FILE *probe = fopen(app_paths_real_path(path, real_path, sizeof(real_path)), "rb");
   if (!probe) {
     debugPrintf("== %s not found at %s; .NET/C# side unavailable ==\n", DOTNET_SO_NAME, path);
     dotnet_mod_loaded = -1;

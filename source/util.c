@@ -233,6 +233,15 @@ uintptr_t sts2_wrapper_base(void) {
   static uintptr_t cached;
   if (cached) return cached;
 
+  if (envIsNso()) {
+    MemoryInfo mi;
+    u32 pi;
+    if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, (u64)(uintptr_t)&sts2_wrapper_base))) {
+      cached = (uintptr_t)mi.addr;
+      return cached;
+    }
+  }
+
   uintptr_t p = ((uintptr_t)&sts2_wrapper_base) & ~0xFFFULL;
   for (int i = 0; i < 8192; i++, p -= 0x1000) {   // up to 32 MB back
     MemoryInfo mi;

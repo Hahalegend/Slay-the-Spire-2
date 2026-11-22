@@ -281,9 +281,11 @@ DEPENDS	:=	$(OFILES:.o=.d)
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-all	:	$(OUTPUT).nro
+all	:	$(OUTPUT).nro $(OUTPUT).nso
 
 $(OUTPUT).nro	:	$(OUTPUT).elf $(OUTPUT).nacp
+$(OUTPUT).nso	:	$(OUTPUT).elf
+	elf2nso $< $@
 $(OUTPUT).elf	:	$(OFILES)
 
 $(OFILES_SRC)	: $(HFILES_BIN)

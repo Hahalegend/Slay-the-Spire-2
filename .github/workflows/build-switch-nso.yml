@@ -1,0 +1,49 @@
+name: Build Switch Wrapper (NRO + NSO)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Switch portlibs
+        run: |
+          dkp-pacman -Sy --noconfirm \
+            switch-libdrm_nouveau \
+            switch-libpng \
+            switch-zlib \
+            switch-libwebp \
+            switch-zstd \
+            switch-libelf \
+            switch-libexpat
+
+      - name: Install Mesa 26.2.4 Horizon Unified SDK
+        run: |
+          curl -fSL "https://github.com/Hahalegend/Slay-the-Spire-2/releases/download/mesa-sdk-26.2.4/mesa-26.2.4-switch-unified-horizon-sdk.zip" -o /tmp/mesa-sdk.zip
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -oq /tmp/mesa-sdk.zip -d /
+          else
+            bsdtar -xf /tmp/mesa-sdk.zip -C /
+          fi
+          ls -lh /opt/devkitpro/portlibs/switch/lib/libvulkan.a /opt/devkitpro/portlibs/switch/include/vulkan/vulkan.h
+
+      - name: Build sts2.nro and sts2.nso
+        run: |
+          make -j$(nproc)
+          ls -lh sts2.nro sts2.nso sts2.elf
+
+      - name: Upload Switch binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: sts2-switch-wrapper
+          path: |
+            sts2.nso
+            sts2.nro
+            sts2.elf
+          retention-days: 30

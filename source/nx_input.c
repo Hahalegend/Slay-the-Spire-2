@@ -60,6 +60,7 @@
 #include <switch.h>
 
 #include "config.h"
+#include "app_paths.h"
 #include "util.h"
 #include "imports.h"
 #include "jni_fake.h"
@@ -173,7 +174,8 @@ static void send_mouse(int action, int mask, float x, float y, int dbl) {
 void nx_input_init(void) {
   if (s_initialised) return;
 
-  snprintf(s_data_dir, sizeof(s_data_dir), "%s", config.data_root);
+  snprintf(s_data_dir, sizeof(s_data_dir), "%s",
+           app_paths_is_romfs() ? config.save_root : config.data_root);
 
   NxpConfig cfg;
   memset(&cfg, 0, sizeof(cfg));

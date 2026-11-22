@@ -576,6 +576,11 @@ static void mirror_fake_write(int idx, const char *data, size_t len) {
 // paths pass through untouched.
 const char *sandbox_path(const char *path, char *buf, size_t sz) {
   if (!path || path[0] != '/') return path;
+  if (strncmp(path, "/romfs/", 7) == 0) {
+    snprintf(buf, sz, "romfs:/%s", path + 7);
+    return buf;
+  }
+  if (strcmp(path, "/romfs") == 0) return "romfs:/";
   if (strncmp(path, "/switch", 7) == 0) return path;
   if (strncmp(path, "/dev", 4) == 0 || strncmp(path, "/proc", 5) == 0) return path;
   // Collapse a leading run of slashes.
@@ -1163,6 +1168,9 @@ static Mutex s_dircache_lock; // zero-initialized == unlocked (libnx)
 static int dir_exists_cached(const char *path) {
   const char *slash = strrchr(path, '/');
   if (!slash || slash == path) return 1; // no dir / root -> treat as existing
+  // Device root ("romfs:/foo" -> slash right after ':'): root always exists;
+  // stripping to "romfs:" would fail stat() on libnx's romfs devoptab.
+  if (slash > path && slash[-1] == ':') return 1;
   size_t len = (size_t)(slash - path);
   if (len >= 256) return 1;
   char dir[256];

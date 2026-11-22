@@ -26,4 +26,11 @@ void app_paths_resolve(char *data_root, size_t data_sz,
 // every later failure presents as a missing file with no clue why.
 void app_paths_log_trace(void);
 
+// 1 when running from embedded NSP RomFS (/romfs -> romfs:/), 0 for loose SD install.
+int app_paths_is_romfs(void);
+
+// Translates virtual POSIX "/romfs" / "/romfs/..." paths into newlib "romfs:/..."
+// paths for direct fopen/stat/opendir calls; returns `path` unchanged otherwise.
+const char *app_paths_real_path(const char *path, char *buf, size_t sz);
+
 #endif

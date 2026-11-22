@@ -51,6 +51,7 @@
 #include "startup_status.h"
 #include "util.h"
 #include "config.h"
+#include "app_paths.h"
 
 /* Godot Image::Format ids, as they appear in this pck. */
 #define F_L8   0
@@ -249,7 +250,8 @@ void astc_bake_run(const char *pck_path) {
     snprintf(cand[2], sizeof(cand[2]), "%s/sts2_astc.pck", config.data_root);
 
     for (int c = 0; c < 3; c++) {
-      FILE *probe = fopen(cand[c], "rb");
+      char real_cand[512];
+      FILE *probe = fopen(app_paths_real_path(cand[c], real_cand, sizeof(real_cand)), "rb");
       if (!probe) continue;
 
       /* Size it, and sanity-check the magic. A zero-byte or truncated file
@@ -274,7 +276,8 @@ void astc_bake_run(const char *pck_path) {
     }
   }
 
-  FILE *f = fopen(pck_path, "rb");
+  char real_pck[512];
+  FILE *f = fopen(app_paths_real_path(pck_path, real_pck, sizeof(real_pck)), "rb");
   if (!f) {
     debugPrintf("[astc] cannot open %s -- nothing to convert\n", pck_path);
     return;

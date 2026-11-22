@@ -21,6 +21,60 @@
 #include "so_util.h"
 #include "util.h"
 #include "error.h"
+#include "app_paths.h"
+
+static Handle s_own_proc_handle = INVALID_HANDLE;
+
+static void sts2_proc_handle_recv_thread(void *arg) {
+  Handle session = (Handle)(uintptr_t)arg;
+  void *base = armGetTls();
+  hipcMakeRequestInline(base);
+
+  s32 idx = 0;
+  Result rc = svcReplyAndReceive(&idx, &session, 1, INVALID_HANDLE, UINT64_MAX);
+  if (R_SUCCEEDED(rc)) {
+    HipcParsedRequest r = hipcParseRequest(base);
+    if (r.meta.num_copy_handles == 1)
+      s_own_proc_handle = r.data.copy_handles[0];
+  }
+  svcCloseHandle(session);
+}
+
+Handle sts2_own_process_handle(void) {
+  Handle h = envGetOwnProcessHandle();
+  if (h != INVALID_HANDLE)
+    return h;
+  if (s_own_proc_handle != INVALID_HANDLE)
+    return s_own_proc_handle;
+
+  // Standalone NSO path (same IPC technique as nx-hbloader): copy
+  // CUR_PROCESS_HANDLE across an in-process session to obtain a real handle
+  // accepted by svcMapProcessCodeMemory / svcSetProcessMemoryPermission.
+  Handle server_handle = INVALID_HANDLE, client_handle = INVALID_HANDLE;
+  if (R_FAILED(svcCreateSession(&server_handle, &client_handle, 0, 0)))
+    return INVALID_HANDLE;
+
+  Thread t;
+  if (R_FAILED(threadCreate(&t, &sts2_proc_handle_recv_thread,
+                            (void *)(uintptr_t)server_handle, NULL, 0x1000, 0x20, 0))) {
+    svcCloseHandle(server_handle);
+    svcCloseHandle(client_handle);
+    return INVALID_HANDLE;
+  }
+  if (R_SUCCEEDED(threadStart(&t))) {
+    hipcMakeRequestInline(armGetTls(),
+      .num_copy_handles = 1,
+    ).copy_handles[0] = CUR_PROCESS_HANDLE;
+    svcSendSyncRequest(client_handle);
+    svcCloseHandle(client_handle);
+    threadWaitForExit(&t);
+  } else {
+    svcCloseHandle(server_handle);
+    svcCloseHandle(client_handle);
+  }
+  threadClose(&t);
+  return s_own_proc_handle;
+}
 
 // not in devkitA64's elf.h
 #ifndef DT_RELR
@@ -57,7 +111,7 @@ void so_finalize(so_module *mod) {
   Result rc = 0;
 
   // map the entire thing as code memory
-  rc = svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
+  rc = svcMapProcessCodeMemory(sts2_own_process_handle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
   if (R_FAILED(rc)) fatal_error("Error: svcMapProcessCodeMemory failed:\n%08x", rc);
 
   // ------------------------------------------------------------------------
@@ -123,7 +177,7 @@ void so_finalize(so_module *mod) {
         run_end++;
       const u64 addr = (u64)mod->load_virtbase + pg * 0x1000;
       const u64 size = (run_end - pg) * 0x1000;
-      rc = svcSetProcessMemoryPermission(envGetOwnProcessHandle(), addr, size, want_x ? Perm_Rx : Perm_Rw);
+      rc = svcSetProcessMemoryPermission(sts2_own_process_handle(), addr, size, want_x ? Perm_Rx : Perm_Rw);
       if (R_FAILED(rc)) fatal_error("Error: could not map %u bytes of %s memory at %p:\n%08x", (u32)size, want_x ? "RX" : "RW", (void *)addr, rc);
       pg = run_end;
     }
@@ -138,7 +192,8 @@ int so_load(so_module *mod, const char *filename, void *base, size_t max_size) {
   memset(mod, 0, sizeof(*mod));
   strncpy(mod->name, filename, sizeof(mod->name) - 1);
 
-  FILE *fd = fopen(filename, "rb");
+  char real_path[512];
+  FILE *fd = fopen(app_paths_real_path(filename, real_path, sizeof(real_path)), "rb");
   if (fd == NULL)
     return -1;
 
@@ -520,10 +575,10 @@ int so_unload(so_module *mod) {
       continue;
     const u64 seg_start = ((u64)mod->load_virtbase + p->p_vaddr) & ~0xFFFull;
     const u64 seg_end = ALIGN_MEM((u64)mod->load_virtbase + p->p_vaddr + p->p_memsz, 0x1000);
-    svcSetProcessMemoryPermission(envGetOwnProcessHandle(), seg_start, seg_end - seg_start, Perm_Rw);
+    svcSetProcessMemoryPermission(sts2_own_process_handle(), seg_start, seg_end - seg_start, Perm_Rw);
   }
   // unmap everything
-  svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
+  svcUnmapProcessCodeMemory(sts2_own_process_handle(), (u64)mod->load_virtbase, (u64)mod->load_base, mod->load_size);
 
   // release virtual address range
   virtmemLock();

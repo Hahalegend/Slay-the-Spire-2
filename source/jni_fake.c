@@ -21,6 +21,7 @@
 #include <switch.h>
 
 #include "config.h"
+#include "app_paths.h"
 #include "util.h"
 #include "libc_shim.h"
 #include "godot_shim.h"   // sts2_rename_replacing
@@ -356,9 +357,16 @@ static const char *resolve_gd_path(int access_type, const char *p, char *buf, si
     const char *s = sandbox_path(p, buf, sz);
     if (s != buf) snprintf(buf, sz, "%s", s);
   }
-  // strip trailing slashes (fatfs stat dislikes them)
+  // strip trailing slashes (fatfs stat dislikes them), but never strip "romfs:/"
   size_t l = strlen(buf);
-  while (l > 1 && buf[l - 1] == '/') buf[--l] = 0;
+  while (l > 1 && buf[l - 1] == '/' && buf[l - 2] != ':') buf[--l] = 0;
+  if (strncmp(buf, "/romfs/", 7) == 0) {
+    char tmp[768];
+    snprintf(tmp, sizeof(tmp), "romfs:/%s", buf + 7);
+    snprintf(buf, sz, "%s", tmp);
+  } else if (strcmp(buf, "/romfs") == 0) {
+    snprintf(buf, sz, "romfs:/");
+  }
   return buf;
 }
 

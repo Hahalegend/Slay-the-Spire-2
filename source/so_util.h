@@ -12,6 +12,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <elf.h>
+#include <switch/types.h>
+
+// Returns a real process handle usable with svcMapProcessCodeMemory /
+// svcSetProcessMemoryPermission: envGetOwnProcessHandle() under hbloader NRO,
+// or obtained once via self-IPC copy-handle when running as a standalone NSO.
+Handle sts2_own_process_handle(void);
 
 #define ALIGN_MEM(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 

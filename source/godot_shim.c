@@ -23,6 +23,7 @@
 #include <switch.h>
 
 #include "config.h"
+#include "app_paths.h"
 #include "imports.h"      // sts2_plausible_lock_ptr, sts2_note_bad_lock_slot
 #include "godot_shim.h"
 #include "libc_shim.h"
@@ -518,9 +519,9 @@ void *AAssetManager_open_fake(void *mgr, const char *filename, int mode) {
   (void)mgr; (void)mode;
   if (!filename) return NULL;
   while (*filename == '/') filename++;
-  char path[768];
+  char path[768], real_path[768];
   snprintf(path, sizeof(path), "%s/assets/%s", config.data_root, filename);
-  FILE *f = fopen(path, "rb");
+  FILE *f = fopen(app_paths_real_path(path, real_path, sizeof(real_path)), "rb");
 #if VERBOSE_IO
   debugPrintf("AAssetManager_open(\"%s\") -> %p\n", filename, (void *)f);
 #endif

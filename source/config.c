@@ -178,7 +178,8 @@ int read_config(const char *file) {
   app_paths_resolve(config.data_root, sizeof(config.data_root),
                     config.save_root, sizeof(config.save_root));
 
-  FILE *f = fopen(file, "r");
+  char real_file[512];
+  FILE *f = fopen(app_paths_real_path(file, real_file, sizeof(real_file)), "r");
   if (f == NULL)
     return -1;
 
@@ -238,6 +239,8 @@ int read_config(const char *file) {
 }
 
 int write_config(const char *file) {
+  if (file && strncmp(file, "/romfs", 6) == 0)
+    return 0; // embedded RomFS is read-only
   FILE *f = fopen(file, "w");
   if (f == NULL)
     return -1;

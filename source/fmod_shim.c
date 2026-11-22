@@ -9,6 +9,7 @@
 #include <switch.h>
 
 #include "config.h"
+#include "app_paths.h"
 #include "util.h"
 #include "so_util.h"
 #include "imports.h"
@@ -140,9 +141,10 @@ static void *gdext_alloc(const char *what, size_t size) {
 
 static int find_module_file(const char *soname, char *out, size_t sz) {
   struct stat st;
+  char real_p[512];
 
   snprintf(out, sz, "%s/%s", config.data_root, soname);
-  if (stat(out, &st) == 0) return 1;
+  if (stat(app_paths_real_path(out, real_p, sizeof(real_p)), &st) == 0) return 1;
 
   // prefix = up to the first '.', e.g. "libGodotFmod"
   char prefix[64];
@@ -153,7 +155,7 @@ static int find_module_file(const char *soname, char *out, size_t sz) {
   }
   prefix[n] = '\0';
 
-  DIR *d = opendir(config.data_root);
+  DIR *d = opendir(app_paths_real_path(config.data_root, real_p, sizeof(real_p)));
   if (!d) return 0;
 
   int found = 0;
