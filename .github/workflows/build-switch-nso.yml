@@ -14,14 +14,18 @@ jobs:
 
       - name: Install Switch portlibs
         run: |
-          dkp-pacman -Sy --noconfirm \
+          dkp-pacman -Sy --noconfirm --needed \
             switch-libdrm_nouveau \
             switch-libpng \
             switch-zlib \
             switch-libwebp \
-            switch-zstd \
-            switch-libelf \
             switch-libexpat
+          if [ ! -f /opt/devkitpro/portlibs/switch/lib/libzstd.a ]; then
+            ZSTD_PKG=$(dkp-pacman -Ssq zstd | grep '^switch-' | head -n1)
+            echo "Installing zstd package: $ZSTD_PKG"
+            dkp-pacman -S --noconfirm --needed "$ZSTD_PKG"
+          fi
+          ls -lh /opt/devkitpro/portlibs/switch/lib/libzstd.a
 
       - name: Install Mesa 26.2.4 Horizon Unified SDK
         run: |
