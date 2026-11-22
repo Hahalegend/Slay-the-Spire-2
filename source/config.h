@@ -448,6 +448,12 @@ typedef struct {
   // Rounded to an even width -- 16:9 does not divide evenly for every height
   // (500 -> 888.9), and an odd width is a bad idea for anything that later
   // wants 2x2 blocks.
+  // 1 = allow Vulkan (Mesa NVK) on Switch emulators. Default 0: emulators
+  // (yuzu/ruzu/eden) lack NAK's IMUL (cbuf) instruction and NVK custom MME
+  // support, so emulators default to Mesa Gallium Nouveau GLES3 while real
+  // Switch hardware continues using Vulkan (enable_vulkan=1) untouched.
+  int emu_vulkan;
+
   int resolution_height;
   char data_root[256];
   char save_root[256];
@@ -456,6 +462,7 @@ typedef struct {
 extern Config config;
 
 int read_config(const char *file);
+int read_config_overlay(const char *file);
 int write_config(const char *file);
 
 #endif

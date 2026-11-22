@@ -77,7 +77,7 @@
  * The question worth asking is not "does this match my header" but "does this
  * match what the CONSUMER expects", and the consumer is Mesa. */
 #define C11_OK       0
-#define C11_TIMEDOUT 4   // Mesa's value, same reasoning as C11_OK above
+#define C11_TIMEDOUT 1   // Mesa's c11/threads.h value (0=success, 1=timedout, 2=error)
 #endif
 
 static int g_once_calls;

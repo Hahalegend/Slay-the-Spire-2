@@ -43,6 +43,7 @@
 #include <stdint.h>
 #include <stdlib.h>   // calloc, for pool growth
 #include <string.h>
+#include <pthread.h>
 #include <threads.h>
 #include <time.h>
 #include <switch.h>
@@ -97,10 +98,10 @@
  * right.
  * ========================================================================= */
 #define NX_THRD_SUCCESS   0
-#define NX_THRD_BUSY      1
+#define NX_THRD_TIMEDOUT  1
 #define NX_THRD_ERROR     2
-#define NX_THRD_NOMEM     3
-#define NX_THRD_TIMEDOUT  4
+#define NX_THRD_BUSY      3
+#define NX_THRD_NOMEM     4
 
 // A GROWABLE pool, in chunks.
 //
@@ -385,6 +386,89 @@ int cnd_timedwait(cnd_t *cnd, mtx_t *mtx, const struct timespec *ts) {
   // A timeout is NOT an error. Mesa uses cnd_timedwait to poll for fence
   // completion, so reporting thrd_error on expiry would turn every ordinary
   // wait into a failure path.
+  return NX_THRD_TIMEDOUT;
+}
+
+// ---------------------------------------------------------------------------
+// Mesa u_cnd_monotonic_*
+//
+// Mesa's util_queue_fence (used by Gallium threaded_context, disk_cache, etc.)
+// pairs our mtx_t (4-byte nxc11_slot index) with struct u_cnd_monotonic.
+// Upstream Mesa implements u_cnd_monotonic_wait() by calling
+// pthread_cond_wait(&cond->cond, (pthread_mutex_t *)mtx) directly -- which
+// passes our 4-byte slot index as a pthread_mutex_t*, returns EINVAL without
+// releasing the nxc11_slot mutex, and spins forever while holding the lock.
+// Overriding all six entry points here keeps u_cnd_monotonic and mtx_t on the
+// exact same nxc11_slot backend (with CLOCK_MONOTONIC deadlines for timedwait).
+// ---------------------------------------------------------------------------
+
+struct u_cnd_monotonic {
+  pthread_cond_t cond;
+};
+
+_Static_assert(sizeof(struct u_cnd_monotonic) >= sizeof(uint32_t),
+               "u_cnd_monotonic must fit a 4-byte nxc11_slot index");
+
+int u_cnd_monotonic_init(struct u_cnd_monotonic *cond) {
+  if (!cond) return NX_THRD_ERROR;
+  const int r = slot_new(cond, mtx_plain);
+  if (r == NX_THRD_SUCCESS) {
+    nxc11_slot *s = slot_of(cond);
+    if (s) condvarInit(&s->c);
+    sts2_c11_cnd_live++;
+  }
+  return r;
+}
+
+void u_cnd_monotonic_destroy(struct u_cnd_monotonic *cond) {
+  nxc11_slot *s = cond ? slot_of(cond) : NULL;
+  if (!s) return;
+  mutexLock(&g_pool_lk);
+  s->in_use = 0;
+  mutexUnlock(&g_pool_lk);
+  if (sts2_c11_cnd_live) sts2_c11_cnd_live--;
+  const uint32_t zero = 0;
+  memcpy(cond, &zero, sizeof(zero));
+}
+
+int u_cnd_monotonic_broadcast(struct u_cnd_monotonic *cond) {
+  nxc11_slot *s = cond ? slot_of(cond) : NULL;
+  if (!s) return NX_THRD_ERROR;
+  condvarWakeAll(&s->c);
+  return NX_THRD_SUCCESS;
+}
+
+int u_cnd_monotonic_signal(struct u_cnd_monotonic *cond) {
+  nxc11_slot *s = cond ? slot_of(cond) : NULL;
+  if (!s) return NX_THRD_ERROR;
+  condvarWakeOne(&s->c);
+  return NX_THRD_SUCCESS;
+}
+
+int u_cnd_monotonic_wait(struct u_cnd_monotonic *cond, mtx_t *mtx) {
+  nxc11_slot *c = cond ? slot_of(cond) : NULL;
+  nxc11_slot *m = mtx ? slot_of(mtx) : NULL;
+  if (!c || !m) return NX_THRD_ERROR;
+  condvarWait(&c->c, &m->m);
+  return NX_THRD_SUCCESS;
+}
+
+int u_cnd_monotonic_timedwait(struct u_cnd_monotonic *cond, mtx_t *mtx,
+                              const struct timespec *abs_time) {
+  nxc11_slot *c = cond ? slot_of(cond) : NULL;
+  nxc11_slot *m = mtx ? slot_of(mtx) : NULL;
+  if (!c || !m) return NX_THRD_ERROR;
+  if (!abs_time) return u_cnd_monotonic_wait(cond, mtx);
+
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return NX_THRD_ERROR;
+
+  int64_t ns = (int64_t)(abs_time->tv_sec - now.tv_sec) * 1000000000LL +
+               ((int64_t)abs_time->tv_nsec - (int64_t)now.tv_nsec);
+  if (ns < 0) ns = 0;
+
+  const Result rc = condvarWaitTimeout(&c->c, &m->m, (u64)ns);
+  if (R_SUCCEEDED(rc)) return NX_THRD_SUCCESS;
   return NX_THRD_TIMEDOUT;
 }
 

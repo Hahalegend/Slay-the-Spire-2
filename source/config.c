@@ -41,6 +41,7 @@
   CONFIG_VAR_INT(use_cmdline_assemblies); \
   CONFIG_VAR_INT(eager_log); \
   CONFIG_VAR_INT(enable_vulkan); \
+  CONFIG_VAR_INT(emu_vulkan); \
   CONFIG_VAR_INT(vk_verbose); \
   CONFIG_VAR_INT(astc_bake); \
   CONFIG_VAR_INT(astc_console); \
@@ -235,6 +236,33 @@ int read_config(const char *file) {
     mkdir(config.save_root, 0777);
   }
 
+  return 0;
+}
+
+int read_config_overlay(const char *file) {
+  char line[1024] = { 0 };
+  char real_file[512];
+  FILE *f = fopen(app_paths_real_path(file, real_file, sizeof(real_file)), "r");
+  if (f == NULL)
+    return -1;
+
+  do {
+    char *name = NULL, *value = NULL, *tmp = NULL;
+    if (fgets(line, sizeof(line), f) != NULL) {
+      name = line;
+      while (*name && isspace((int)*name)) ++name;
+      if (name[0] == '#') continue;
+      for (tmp = name; *tmp && !isspace((int)*tmp); ++tmp);
+      if (*tmp != 0) {
+        *tmp = 0;
+        for (value = tmp + 1; *value && isspace((int)*value); ++value);
+        for (tmp = value + strlen(value) - 1; tmp >= value && isspace((int)*tmp); --tmp) *tmp = 0;
+        parse_var(name, value);
+      }
+    }
+  } while (!feof(f));
+
+  fclose(f);
   return 0;
 }
 

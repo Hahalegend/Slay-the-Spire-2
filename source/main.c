@@ -425,6 +425,41 @@ static EGLContext s_ctx = EGL_NO_CONTEXT;
 #define EGL_OPENGL_ES3_BIT 0x0040
 #endif
 
+// ---------------------------------------------------------------------------
+// Emulator GPU barrier compatibility shim (Yuzu / Eden / Sudachi)
+//
+// Mesa 26.2.4's nouveau_horizon_channel_create builds static cache-acquire
+// and full-barrier-acquire pushbuffers that issue Maxwell3D (0xB197) methods
+// (0x04A2, 0x0369, 0x050A, 0x0509) on subchannel 0 before any explicit
+// SET_OBJECT(0, 0xB197) is pushed. Real Tegra X1 hardware accepts this after
+// AllocateObjectContext(0xB197), whereas Yuzu 1734 stubs AllocateObjectContext
+// and leaves DmaPusher::subchannels[0] == nullptr, crashing on method 0x04A2.
+//
+// On real Switch (!sts2_is_emulator()), pass straight through untouched.
+// On emulators, prepend SET_OBJECT(subch=0, MaxwellB 0xB197) (2 words).
+// ---------------------------------------------------------------------------
+
+extern uint32_t __real_nouveau_horizon_gm20b_build_cache_acquire(uint32_t *out);
+extern uint32_t __real_nouveau_horizon_gm20b_build_full_barrier_acquire(uint32_t *out);
+
+uint32_t __wrap_nouveau_horizon_gm20b_build_cache_acquire(uint32_t *out) {
+  if (sts2_is_emulator()) {
+    out[0] = 0x20010000u; // INC(1 word, subch=0, method=0x0000 SET_OBJECT)
+    out[1] = 0x0000B197u; // MaxwellB (3D)
+    return 2u + __real_nouveau_horizon_gm20b_build_cache_acquire(out + 2);
+  }
+  return __real_nouveau_horizon_gm20b_build_cache_acquire(out);
+}
+
+uint32_t __wrap_nouveau_horizon_gm20b_build_full_barrier_acquire(uint32_t *out) {
+  if (sts2_is_emulator()) {
+    out[0] = 0x20010000u; // INC(1 word, subch=0, method=0x0000 SET_OBJECT)
+    out[1] = 0x0000B197u; // MaxwellB (3D)
+    return 2u + __real_nouveau_horizon_gm20b_build_full_barrier_acquire(out + 2);
+  }
+  return __real_nouveau_horizon_gm20b_build_full_barrier_acquire(out);
+}
+
 static int egl_setup(void) {
   s_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
   if (s_dpy == EGL_NO_DISPLAY) return -1;
@@ -445,6 +480,7 @@ static int egl_setup(void) {
 
   NWindow *win = nwindowGetDefault();
   nwindowSetDimensions(win, screen_width, screen_height);
+  nwindowSetCrop(win, 0, 0, screen_width, screen_height);
   s_surf = eglCreateWindowSurface(s_dpy, cfg, (EGLNativeWindowType)win, NULL);
   if (s_surf == EGL_NO_SURFACE) return -5;
 
@@ -1619,8 +1655,14 @@ int main(void) {
   snprintf(cfg_path, sizeof(cfg_path), "%s/%s", app_paths_data_root(), CONFIG_NAME);
   if (read_config(cfg_path) != 0)
     write_config(cfg_path);
+  if (app_paths_is_romfs())
+    read_config_overlay(DEFAULT_DATA_ROOT "/" CONFIG_NAME);
 
   check_syscalls();
+  if (sts2_is_emulator() && !config.emu_vulkan && config.enable_vulkan) {
+    debugPrintf("== emulator detected (CodeMemory fallback): using GLES3 (Nouveau) renderer (set emu_vulkan 1 to override) ==\n");
+    config.enable_vulkan = 0;
+  }
   stats_open();
   check_data();
   mkdir(config.save_root, 0777);
@@ -2056,11 +2098,16 @@ int main(void) {
   }
 
   debugPrintf("== Slay the Spire 2 Switch wrapper booting; build " __DATE__ " " __TIME__ "; data_root=%s ==\n", config.data_root);
-  if (s_egl_owns_window)
+  if (s_egl_owns_window) {
     debugPrintf("== EGL/GLES3 context created (%dx%d) ==\n", screen_width, screen_height);
-  else
+    stats_mark(sts2_is_emulator() ? "renderer: GLES3 (CodeMemory/emulator)"
+                                  : "renderer: GLES3 (ProcessCodeMemory)");
+  } else {
     debugPrintf("== EGL/GLES3 NOT created: Vulkan owns the default NWindow (%dx%d) ==\n",
                 screen_width, screen_height);
+    stats_mark(sts2_is_emulator() ? "renderer: Vulkan (CodeMemory/emulator)"
+                                  : "renderer: Vulkan (ProcessCodeMemory)");
+  }
 
   // Claim the GPU pool before any module loads -- OPTIONAL, and off by default.
   //

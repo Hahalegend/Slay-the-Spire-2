@@ -24,6 +24,11 @@ Handle sts2_own_process_handle(void);
 // like yuzu/ruzu/Ryujinx that stub svcCreateSession/svcReplyAndReceive).
 int sts2_codemem_available(void);
 
+// Returns 1 when running without a real process handle (i.e. on Switch
+// emulators that stub svcCreateSession/svcReplyAndReceive and rely on the
+// CodeMemory 0x4B/0x4C fallback), 0 on real Nintendo Switch hardware.
+int sts2_is_emulator(void);
+
 #define ALIGN_MEM(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 
 #define SO_MAX_SEGMENTS 8

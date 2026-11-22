@@ -42,7 +42,9 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) \
 			-Wl,--wrap,memcpy -Wl,--wrap,memmove -Wl,--wrap,malloc -Wl,--wrap,calloc -Wl,--wrap,memalign -Wl,--wrap,free -Wl,--wrap,realloc \
 			-Wl,--wrap,memcpy -Wl,--wrap,memmove -Wl,--wrap,malloc_usable_size \
 			-Wl,--wrap,vkCreateBuffer -Wl,--wrap,vkUpdateDescriptorSets \
-			-Wl,--wrap,vkCmdBindPipeline -Wl,--wrap,vkCreateShaderModule
+			-Wl,--wrap,vkCmdBindPipeline -Wl,--wrap,vkCreateShaderModule \
+			-Wl,--wrap,nouveau_horizon_gm20b_build_cache_acquire \
+			-Wl,--wrap,nouveau_horizon_gm20b_build_full_barrier_acquire
 #            ^ gpu_arena.c. libdrm_nouveau and mesa are linked INTO the NRO, so
 #              their memalign calls never pass through the import table -- that
 #              only serves the .so modules we load ourselves. --wrap is the only

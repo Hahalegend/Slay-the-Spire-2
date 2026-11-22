@@ -107,6 +107,10 @@ int sts2_codemem_available(void) {
   return s_codemem_ok;
 }
 
+int sts2_is_emulator(void) {
+  return sts2_own_process_handle() == INVALID_HANDLE;
+}
+
 // not in devkitA64's elf.h
 #ifndef DT_RELR
 #define DT_RELR    36
